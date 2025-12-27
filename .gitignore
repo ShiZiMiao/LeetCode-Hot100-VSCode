@@ -1,0 +1,23 @@
+# 编译输出
+out/
+dist/
+
+# 依赖
+node_modules/
+
+# VS Code测试
+.vscode-test/
+
+# 打包文件
+*.vsix
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE配置
+.idea/
+
+# 日志
+*.log
+npm-debug.log*
