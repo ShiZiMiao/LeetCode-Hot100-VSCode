@@ -214,7 +214,111 @@ vsce package
 
 ### 4. 本地调试
 
-打开代码 → 点击 "调试" → 生成调试文件 → 运行调试
+本地调试功能可以让你在本地运行和调试 LeetCode 题目代码，无需每次都提交到 LeetCode 服务器。
+
+#### 使用步骤
+
+1. **打开题目代码文件**
+   - 在侧边栏选择一道题目
+   - 选择你喜欢的编程语言
+   - 代码文件会自动打开
+
+2. **生成调试文件**
+   - 点击编辑器右上角的 **"🐛 调试"** 按钮
+   - 插件会自动生成一个包含测试用例的调试文件
+   - 调试文件保存在与原代码相同的目录
+
+3. **运行调试**
+   - 点击 **"▶ 运行调试"** 按钮
+   - 代码会在 VS Code 终端中执行
+   - 查看输出结果，对比预期答案
+
+#### 调试文件说明
+
+调试文件会自动包含：
+- ✅ 你编写的解题代码
+- ✅ LeetCode 提供的测试用例
+- ✅ 主函数入口（用于运行）
+- ✅ 结果输出（便于查看）
+
+#### 各语言调试示例
+
+**Python 调试文件：**
+```python
+# debug_1_two_sum.py
+class Solution:
+    def twoSum(self, nums, target):
+        # 你的代码...
+        pass
+
+# 测试用例
+if __name__ == "__main__":
+    solution = Solution()
+    print(solution.twoSum([2,7,11,15], 9))  # 预期: [0,1]
+```
+
+**Java 调试文件：**
+```java
+// debug_1_two_sum.java
+class Solution {
+    public int[] twoSum(int[] nums, int target) {
+        // 你的代码...
+    }
+    
+    public static void main(String[] args) {
+        Solution s = new Solution();
+        int[] result = s.twoSum(new int[]{2,7,11,15}, 9);
+        System.out.println(Arrays.toString(result)); // 预期: [0, 1]
+    }
+}
+```
+
+**C++ 调试文件：**
+```cpp
+// debug_1_two_sum.cpp
+#include <vector>
+#include <iostream>
+using namespace std;
+
+class Solution {
+public:
+    vector<int> twoSum(vector<int>& nums, int target) {
+        // 你的代码...
+    }
+};
+
+int main() {
+    Solution s;
+    vector<int> nums = {2,7,11,15};
+    auto result = s.twoSum(nums, 9);
+    // 输出结果...
+    return 0;
+}
+```
+
+#### 环境要求
+
+确保你的系统已安装对应语言的编译器/解释器：
+
+| 语言 | 所需工具 | 安装命令 |
+|------|----------|----------|
+| Python | Python 3.x | `python --version` 验证 |
+| Java | JDK 8+ | `javac --version` 验证 |
+| C++ | g++ / clang++ | `g++ --version` 验证 |
+| JavaScript | Node.js | `node --version` 验证 |
+| Go | Go 1.16+ | `go version` 验证 |
+| Rust | rustc | `rustc --version` 验证 |
+
+#### 常见问题
+
+**Q: 调试文件在哪里？**
+A: 在你的代码文件同目录下，文件名格式为 `debug_题目ID_题目名.扩展名`
+
+**Q: 如何修改测试用例？**
+A: 直接编辑调试文件中的测试用例部分，保存后重新运行即可
+
+**Q: 运行报错怎么办？**
+A: 检查是否安装了对应语言的运行环境，确保环境变量配置正确
 
 ## 📁 项目架构
 
