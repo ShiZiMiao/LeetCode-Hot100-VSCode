@@ -2,7 +2,7 @@
   "name": "leetcode",
   "displayName": "LeetCode Hot 100 刷题助手",
   "description": "在VSCode中刷LeetCode Hot 100题目",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "engines": {
     "vscode": "^1.107.0"
   },
