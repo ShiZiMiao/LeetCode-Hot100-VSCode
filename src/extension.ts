@@ -15,17 +15,39 @@ import { generateDebugFile } from './utils/debugUtils';
  *
  * LeetCode 官方题解内容包含指向 https://leetcode.cn/playground/... 的跨域 iframe。
  * 在 VS Code 的 webview 中，这类跨域 iframe 无法携带用户会话 Cookie，会被
- * LeetCode 重定向成登录页，导致题解显示异常。此函数将其替换为可直接点击的
- * 外部链接，避免触发登录页重定向。
+ * LeetCode 重定向成登录页，导致题解显示异常。此函数将其整块移除，
+ * 同时保留题解中的文字、公式与代码块。题目自身的代码骨架由
+ * codeSnippets 以代码块形式单独展示。
  */
 function sanitizeSolutionContent(content: string): string {
 	if (!content) {
 		return content;
 	}
-	return content.replace(/<iframe\b[^>]*src="([^"]*)"[^>]*>[\s\S]*?<\/iframe>/gi, (match, src) => {
-		const link = src || 'https://leetcode.cn/playground/';
-		return `\n[🔗 在浏览器打开代码演示](${link})\n`;
-	}).replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+	return content.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+}
+
+/**
+ * 从题目 codeSnippets 中按语言优先级挑选一个代码骨架展示。
+ *
+ * 优先级：Python(python3/python) > C/C++(c/cpp) > Java(java)。
+ * 若都不存在，则回退到第一个可用的代码骨架。
+ */
+function selectPreferredSnippet(snippets: any[]): any | undefined {
+	if (!snippets || snippets.length === 0) {
+		return undefined;
+	}
+	const priorityGroups = [
+		['python3', 'python'],
+		['c', 'cpp'],
+		['java']
+	];
+	for (const group of priorityGroups) {
+		const found = snippets.find((s: any) => group.includes((s.langSlug || '').toLowerCase()));
+		if (found) {
+			return found;
+		}
+	}
+	return snippets[0];
 }
 
 // 状态栏项
@@ -428,6 +450,11 @@ export function activate(context: vscode.ExtensionContext) {
 								color: var(--vscode-textLink-foreground);
 								margin-top: 0;
 							}
+							.solution-tip {
+								color: var(--vscode-descriptionForeground);
+								font-size: 13px;
+								margin-top: 0;
+							}
 							.article-item {
 								padding: 15px;
 								background: var(--vscode-editor-background);
@@ -739,6 +766,47 @@ export function activate(context: vscode.ExtensionContext) {
 									<div class="solution-section">
 										<h2>📖 官方题解</h2>
 										<p>🔒 此题解为会员专享内容</p>
+									</div>
+								`;
+							}
+
+							// 题目自带代码骨架（用代码块形式展示，替代无法抓取的 playground iframe）
+							if (q.codeSnippets && q.codeSnippets.length > 0) {
+								const preferred = selectPreferredSnippet(q.codeSnippets);
+								const langLabel = preferred && preferred.lang ? preferred.lang : '代码';
+								const langFence = preferred && preferred.langSlug ? preferred.langSlug : '';
+								const codeSnippetMd = preferred
+									? `\`\`\`${langFence}\n${preferred.code}\n\`\`\``
+									: '';
+								const snippetMdContent = JSON.stringify(codeSnippetMd);
+								solutionHtml += `
+									<div class="solution-section">
+										<h2>💻 代码示例（${langLabel}）</h2>
+										<p class="solution-tip">以下是该题的代码模板，可在编辑器里编写解题代码。</p>
+										<div class="solution-content" id="code-snippets-content"></div>
+										<script>
+											(function() {
+												const md = ${snippetMdContent};
+												const el = document.getElementById('code-snippets-content');
+												if (typeof marked !== 'undefined') {
+													const renderer = new marked.Renderer();
+													renderer.code = function(code, lang) {
+														const cleanLang = lang ? lang.replace(/\\s*\\[.*\\]$/, '').trim() : '';
+														const langClass = cleanLang ? 'language-' + cleanLang : '';
+														return '<pre><code class="' + langClass + '">' +
+															(code.text || code).replace(/</g, '&lt;').replace(/>/g, '&gt;') +
+															'</code></pre>';
+													};
+													marked.setOptions({ renderer: renderer, breaks: true, gfm: true });
+													el.innerHTML = marked.parse(md);
+													if (typeof processCodeTabs === 'function') {
+														processCodeTabs(el);
+													}
+												} else {
+													el.innerHTML = md.replace(/\\n/g, '<br>');
+												}
+											})();
+										</script>
 									</div>
 								`;
 							}
