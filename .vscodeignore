@@ -2,6 +2,7 @@
 .vscode-test/**
 src/**
 .gitignore
+.npmrc
 .yarnrc
 vsc-extension-quickstart.md
 **/tsconfig.json
@@ -9,3 +10,9 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
+**/node_modules/**
+pnpm-lock.yaml
+pnpm-workspace.yaml
+*.vsix
+README_pkg.md
+vscodeignore_pkg

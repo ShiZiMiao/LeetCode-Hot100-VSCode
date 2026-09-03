@@ -10,6 +10,24 @@ import { Hot100Provider } from './views/hot100Provider';
 import { selectLanguage, getExtension } from './utils/languageUtils';
 import { generateDebugFile } from './utils/debugUtils';
 
+/**
+ * 清理题解 Markdown 内容中的 <iframe> 代码游玩区。
+ *
+ * LeetCode 官方题解内容包含指向 https://leetcode.cn/playground/... 的跨域 iframe。
+ * 在 VS Code 的 webview 中，这类跨域 iframe 无法携带用户会话 Cookie，会被
+ * LeetCode 重定向成登录页，导致题解显示异常。此函数将其替换为可直接点击的
+ * 外部链接，避免触发登录页重定向。
+ */
+function sanitizeSolutionContent(content: string): string {
+	if (!content) {
+		return content;
+	}
+	return content.replace(/<iframe\b[^>]*src="([^"]*)"[^>]*>[\s\S]*?<\/iframe>/gi, (match, src) => {
+		const link = src || 'https://leetcode.cn/playground/';
+		return `\n[🔗 在浏览器打开代码演示](${link})\n`;
+	}).replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+}
+
 // 状态栏项
 let statusBarItem: vscode.StatusBarItem;
 
@@ -669,8 +687,10 @@ export function activate(context: vscode.ExtensionContext) {
 
 							// 官方题解 - Markdown内容需要用marked解析
 							if (officialSolution && officialSolution.content && officialSolution.canSeeDetail) {
+								// 清理内容中的 iframe 代码游玩区，避免 webview 中被重定向为登录页
+								const cleanedContent = sanitizeSolutionContent(officialSolution.content);
 								// 将Markdown内容进行JSON编码以安全传递
-								const mdContent = JSON.stringify(officialSolution.content);
+								const mdContent = JSON.stringify(cleanedContent);
 								solutionHtml += `
 									<div class="solution-section">
 										<h2>📖 官方题解</h2>
@@ -758,8 +778,10 @@ export function activate(context: vscode.ExtensionContext) {
 							const articleData = await leetCodeApi.getSolutionArticle(message.slug);
 							const article = articleData?.data?.solutionArticle;
 							if (article) {
+								// 清理内容中的 iframe，避免 webview 中被重定向为登录页
+								const cleanedArticle = sanitizeSolutionContent(article.content || '');
 								// 将Markdown内容进行JSON编码以安全传递
-								const articleMdContent = JSON.stringify(article.content || '');
+								const articleMdContent = JSON.stringify(cleanedArticle);
 								const articleHtml = `
 									<div class="solution-section">
 										<button onclick="vscode.postMessage({type:'loadSolution'})" style="background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-bottom:20px;">← 返回列表</button>

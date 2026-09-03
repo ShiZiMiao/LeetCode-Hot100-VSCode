@@ -21,6 +21,12 @@
 
 本项目是一个功能完整的 VS Code 扩展，旨在为开发者提供高效的 LeetCode 刷题体验。通过深度集成 LeetCode API 和 VS Code 扩展生态，实现了从题目浏览、代码编写、在线测试到提交的全流程支持。
 
+> ## ⚠️ Fork 说明
+> 本仓库是 [Imzhou-tju/Hot100-for-VSCode](https://github.com/Imzhou-tju/Hot100-for-VSCode) 的**修复 fork**，版权归原作者所有（MIT License）。
+>
+> **本次修复内容：**
+> - 修复题解页的登录页重定向问题：官方题解内容中的 `<iframe>` 代码游玩区（`https://leetcode.cn/playground/...`）在 VS Code webview 内跨域加载时未携带会话 Cookie，会被 LeetCode 重定向为登录页。现已将这些 iframe 替换为可直接点击的「在浏览器打开代码演示」链接，其余题解文字、公式与代码块照常渲染。
+
 ## 技术栈
 
 ### 核心技术
