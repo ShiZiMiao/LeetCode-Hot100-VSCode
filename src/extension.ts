@@ -61,6 +61,7 @@ function htmlToMarkdown(content: string): string {
 	s = s.replace(/<\/?blockquote[^>]*>/gi, '\n> ');
 	s = s.replace(/<\/?(span|div)[^>]*>/gi, '');
 	s = s.replace(/<\/?[a-zA-Z][^>]*>/g, ''); // 兜底：移除其余未知标签
+	s = s.replace(/<!(\[)/g, '$1'); // 部分文章正文带 <![img](...) 包裹，还原为 ![img](...)
 	return s;
 }
 
@@ -81,9 +82,30 @@ function codeLangPriority(lang: string): number {
 	return 2;
 }
 
-/** 行内 Markdown 渲染（图片/链接/行内代码/粗体/斜体/删除线），文本先做 HTML 转义 */
-function renderInlineMarkdown(text: string): string {
+/** 语言名显示规范化：py → Python、cpp → C++、golang → Go 等（标签页与代码块标注用） */
+function displayLangName(lang: string): string {
+	const map: Record<string, string> = {
+		'py': 'Python', 'python': 'Python', 'python3': 'Python3',
+		'java': 'Java', 'cpp': 'C++', 'c++': 'C++', 'c': 'C',
+		'go': 'Go', 'golang': 'Go', 'js': 'JavaScript', 'javascript': 'JavaScript',
+		'rust': 'Rust', 'ts': 'TypeScript', 'typescript': 'TypeScript'
+	};
+	return map[lang.toLowerCase()] || lang;
+}
+
+/**
+ * 行内 Markdown 渲染（图片/视频/链接/行内代码/粗体/斜体/删除线），文本先做 HTML 转义。
+ * videoPageUrl 存在时，视频题解（![xxx.mp4](资产id)）渲染为可点击播放入口——
+ * 视频在 LeetCode 内部 CDN 上且带防盗链，webview 无法直接内嵌播放。
+ */
+function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 	let s = escapeHtml(text);
+	s = s.replace(/!\[([^\]]*\.(?:mp4|webm))\]\(([^)\s]+)\)/gi, (m, alt, url) => {
+		if (videoPageUrl) {
+			return `<button class="video-link" onclick="vscode.postMessage({ type: 'openExternal', url: '${videoPageUrl}' })">🎬 播放视频题解（在浏览器中播放）</button>`;
+		}
+		return `<span class="img-placeholder">[视频：${alt}]</span>`;
+	});
 	s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
 		if (/^https?:\/\//i.test(url)) {
 			return `<img src="${url}" alt="${alt}" />`;
@@ -119,7 +141,7 @@ function renderCodeTabsHtml(blocks: MarkdownCodeBlock[], preferredFirst: boolean
 		const preferred = pickPreferredCodeBlock(blocks)!;
 		ordered = [preferred, ...blocks.filter(b => b !== preferred)];
 	}
-	const tabs = ordered.map((b, idx) => `<button class="lang-tab${idx === 0 ? ' active' : ''}" onclick="selectLangTab(this)">${escapeHtml(b.lang || 'Code')}</button>`).join('');
+	const tabs = ordered.map((b, idx) => `<button class="lang-tab${idx === 0 ? ' active' : ''}" onclick="selectLangTab(this)">${escapeHtml(displayLangName(b.lang))}</button>`).join('');
 	const contents = ordered.map((b, idx) => `<div class="lang-code-block${idx === 0 ? ' active' : ''}">${renderCodeBlockHtml(b)}</div>`).join('');
 	return `<div class="code-tabs-container"><div class="lang-tabs">${tabs}</div>${contents}</div>`;
 }
@@ -146,11 +168,12 @@ function pickPreferredCodeBlock(blocks: MarkdownCodeBlock[]): MarkdownCodeBlock 
  *   - 'all'：保留全部代码块并按语言生成标签页（preferredFirst 时优先语言排首位并默认选中，
  *     用于官方题解，接近网页版的多语言切换体验；社区题解保持原文顺序）。
  */
-function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'preferred', preferredFirst: boolean = false): string {
+function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'preferred', preferredFirst: boolean = false, videoPageUrl?: string): string {
 	if (!md) {
 		return '';
 	}
-	const lines = htmlToMarkdown(md).split('\n');
+	// 社区题解正文使用 \r\n 行尾，先归一化，否则围栏/标题等匹配不到
+	const lines = htmlToMarkdown(md.replace(/\r\n?/g, '\n')).split('\n');
 	const out: string[] = [];
 	// 围栏行：```lang [label] 或 ``` 均命中；语言从 ``` 后的内容提取，去掉 [label]
 	const fenceLineRe = /^\s*```\s*(.*)$/;
@@ -215,7 +238,7 @@ function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'prefe
 			if (level <= 4 && out.length > 0) {
 				out.push('<hr>');
 			}
-			out.push(`<h${level}>${renderInlineMarkdown(trimmed.replace(/^#+\s*/, ''))}</h${level}>`);
+			out.push(`<h${level}>${renderInlineMarkdown(trimmed.replace(/^#+\s*/, ''), videoPageUrl)}</h${level}>`);
 			i++;
 		} else if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) {
 			out.push('<hr>');
@@ -226,7 +249,7 @@ function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'prefe
 				quote.push(lines[i].trim().replace(/^>\s?/, ''));
 				i++;
 			}
-			out.push(`<blockquote>${renderInlineMarkdown(quote.join(' '))}</blockquote>`);
+			out.push(`<blockquote>${renderInlineMarkdown(quote.join(' '), videoPageUrl)}</blockquote>`);
 		} else if (trimmed.startsWith('|') && trimmed.endsWith('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
 			const header = splitTableRow(trimmed);
 			i += 2;
@@ -235,8 +258,8 @@ function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'prefe
 				rows.push(splitTableRow(lines[i]));
 				i++;
 			}
-			const thead = header.map(c => `<th>${renderInlineMarkdown(c)}</th>`).join('');
-			const tbody = rows.map(r => `<tr>${r.map(c => `<td>${renderInlineMarkdown(c)}</td>`).join('')}</tr>`).join('');
+			const thead = header.map(c => `<th>${renderInlineMarkdown(c, videoPageUrl)}</th>`).join('');
+			const tbody = rows.map(r => `<tr>${r.map(c => `<td>${renderInlineMarkdown(c, videoPageUrl)}</td>`).join('')}</tr>`).join('');
 			out.push(`<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`);
 		} else {
 			const listMatch = trimmed.match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
@@ -261,7 +284,7 @@ function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'prefe
 						listHtml += `<${tag}>`;
 						stack.push({ tag, indent: item.indent });
 					}
-					listHtml += `<li>${renderInlineMarkdown(item.text)}</li>`;
+					listHtml += `<li>${renderInlineMarkdown(item.text, videoPageUrl)}</li>`;
 				}
 				while (stack.length > 0) {
 					listHtml += `</${stack.pop()!.tag}>`;
@@ -279,7 +302,7 @@ function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'prefe
 					para.push(t);
 					i++;
 				}
-				out.push(`<p>${renderInlineMarkdown(para.join(' '))}</p>`);
+				out.push(`<p>${renderInlineMarkdown(para.join(' '), videoPageUrl)}</p>`);
 			}
 		}
 	}
@@ -814,6 +837,19 @@ export function activate(context: vscode.ExtensionContext) {
 							.img-placeholder {
 								color: var(--vscode-descriptionForeground);
 							}
+							.video-link {
+								background: var(--vscode-button-background);
+								color: var(--vscode-button-foreground);
+								border: none;
+								padding: 10px 20px;
+								border-radius: 6px;
+								cursor: pointer;
+								font-size: 14px;
+								margin: 8px 0;
+							}
+							.video-link:hover {
+								background: var(--vscode-button-hoverBackground);
+							}
 							table {
 								border-collapse: collapse;
 								margin: 16px 0;
@@ -951,7 +987,7 @@ function selectLangTab(btn) {
 												<div class="solution-section">
 													<h2>📖 官方题解</h2>
 <div class="article-meta" style="margin-bottom:12px;">👑 LeetCode 官方 | 👍 ${article.upvoteCount}</div>
-														<div class="solution-content">${renderMarkdownToHtml(cleanedContent, 'all', true)}</div>
+														<div class="solution-content">${renderMarkdownToHtml(cleanedContent, 'all', true, `https://leetcode.cn/problems/${q.titleSlug}/solutions/${officialArticleEdge.node.slug}/`)}</div>
 												</div>
 											`;
 										}
@@ -1036,7 +1072,10 @@ function selectLangTab(btn) {
 						} catch (error) {
 							panel.webview.html = generatePanelHtml('solution', `<div class="loading">加载题解失败: ${error}</div>`);
 						}
-					} else if (message.type === 'openArticle') {
+					} else if (message.type === 'openExternal' && typeof message.url === 'string' && message.url.startsWith('https://leetcode.cn/')) {
+							// 视频题解等无法在 webview 内播放的内容，交给系统默认浏览器打开
+							vscode.env.openExternal(vscode.Uri.parse(message.url));
+						} else if (message.type === 'openArticle') {
 						try {
 							const articleData = await leetCodeApi.getSolutionArticle(message.slug);
 							const article = articleData?.data?.solutionArticle;

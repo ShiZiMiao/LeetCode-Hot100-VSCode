@@ -103,6 +103,10 @@ src/
 
 6. **社区题解/pk检查脚本**：答题解析、注入若依赖外部 API，注意 `leetcodeApi.ts` 中 GraphQL 的字段名（如 `codeSnippets` 含 `lang`、`langSlug`、`code`）。
 
+7. **社区文章正文行尾**：部分社区题解文章（如《动画》系列）正文使用 `\r\n` 行尾，`renderMarkdownToHtml` 渲染前必须 `replace(/\r\n?/g, '\n')` 归一化，否则围栏代码块/标题匹配失败会显示原始 Markdown。
+
+8. **视频题解**：官方文章里的 `![xxx.mp4](资产id)` 指向 `video.leetcode.cn` 内部 CDN（防盗链+登录态，裸访问 403），webview 无法内嵌播放（与 playground iframe 同理）。已渲染为"播放视频题解"按钮，点击经 `openExternal` 消息在系统浏览器打开官方题解页。
+
 ## 题解页数据流（当前实现）
 
 `loadSolution` 消息处理中：
