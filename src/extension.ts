@@ -104,7 +104,9 @@ function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 	let s = escapeHtml(text);
 	s = s.replace(/!\[([^\]]*\.(?:mp4|webm))\]\(([^)\s]+)\)/gi, (m, alt, url) => {
 		if (videoPageUrl) {
-			return `<button class="video-link" onclick="vscode.postMessage({ type: 'openExternal', url: '${videoPageUrl}' })">🎬 播放视频题解（在浏览器中播放）</button>`;
+			// 视频在 LeetCode 内部 CDN（可能防盗链）：先尝试内嵌播放，失败时页面脚本自动降级为浏览器按钮
+			const src = url + (/\.(mp4|webm)$/i.test(url) ? '' : '.mp4');
+			return `<video class="article-video" data-page-url="${videoPageUrl}" controls preload="metadata" src="https://video.leetcode.cn/${src}">视频题解无法在插件内播放</video>`;
 		}
 		return `<span class="img-placeholder">[视频：${alt}]</span>`;
 	});
@@ -316,18 +318,15 @@ let statusBarItem: vscode.StatusBarItem;
 
 // highlight.js 本地资源（vendor/ 随扩展打包，.vscodeignore 未排除），
 // 避免 CDN 不可达导致语法高亮静默失效
-let highlightAssets: { css: string; js: string } | null = null;
+let highlightJsContent: string | null = null;
 
-function getHighlightAssets(context: vscode.ExtensionContext): { css: string; js: string } | null {
-	if (highlightAssets) {
-		return highlightAssets;
+function getHighlightJs(context: vscode.ExtensionContext): string | null {
+	if (highlightJsContent !== null) {
+		return highlightJsContent;
 	}
 	try {
-		highlightAssets = {
-			css: fs.readFileSync(path.join(context.extensionPath, 'vendor', 'highlight-github.min.css'), 'utf8'),
-			js: fs.readFileSync(path.join(context.extensionPath, 'vendor', 'highlight.min.js'), 'utf8')
-		};
-		return highlightAssets;
+		highlightJsContent = fs.readFileSync(path.join(context.extensionPath, 'vendor', 'highlight.min.js'), 'utf8');
+		return highlightJsContent;
 	} catch (e) {
 		return null;
 	}
@@ -643,7 +642,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 				// 生成带标签页的面板HTML
 const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
-						const hljsAssets = getHighlightAssets(context);
+						const hljsJs = getHighlightJs(context);
 						return `
 						<!DOCTYPE html>
 					<html lang="zh-CN">
@@ -853,9 +852,32 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							.code-tabs-container {
 								margin: 16px 0;
 							}
-							.hljs {
-								background: transparent;
-								padding: 0;
+							/* 代码语法高亮配色（GitHub 明/暗两套，暗色由页面脚本按主题亮度切换 CSS 变量） */
+							.solution-content pre code {
+								color: var(--hljs-base, #24292e);
+							}
+							.hljs-keyword, .hljs-literal, .hljs-selector-tag, .hljs-name {
+								color: var(--hljs-keyword, #d73a49);
+							}
+							.hljs-string, .hljs-regexp, .hljs-addition, .hljs-char.escape_ {
+								color: var(--hljs-string, #032f62);
+							}
+							.hljs-comment, .hljs-quote, .hljs-meta, .hljs-doctag {
+								color: var(--hljs-comment, #6a737d);
+							}
+							.hljs-title, .hljs-title.class_, .hljs-title.function_, .hljs-section {
+								color: var(--hljs-title, #6f42c1);
+							}
+							.hljs-number, .hljs-symbol, .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable {
+								color: var(--hljs-number, #005cc5);
+							}
+							.hljs-built_in, .hljs-type, .hljs-params, .hljs-variable.language_ {
+								color: var(--hljs-built, #e36209);
+							}
+							video.article-video {
+								max-width: 100%;
+								border-radius: 8px;
+								margin: 8px 0;
 							}
 							.img-placeholder {
 								color: var(--vscode-descriptionForeground);
@@ -889,8 +911,8 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-							<!-- 加载 highlight.js 用于代码语法高亮（本地 vendor 资源，无 CDN 依赖） -->
-							${hljsAssets ? `<style>${hljsAssets.css}</style><script>${hljsAssets.js}</script>` : '<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/styles/github.min.css"><script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>'}
+							<!-- 加载 highlight.js（本地 vendor 资源，无 CDN 依赖）用于代码语法高亮 -->
+							${hljsJs ? `<script>${hljsJs}</script>` : '<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>'}
 					</head>
 					<body>
 						<div class="tabs">
@@ -944,35 +966,66 @@ function selectLangTab(btn) {
 								box.querySelectorAll('.lang-code-block')[idx].classList.add('active');
 							}
 							
-							// 若 KaTeX 从 CDN 加载成功，则渲染 $$/$ 数学公式；失败时公式保留为原文
-							if (typeof renderMathInElement !== 'undefined') {
-								renderMathInElement(document.body, {
-									delimiters: [
-										{ left: '$$', right: '$$', display: true },
-										{ left: '$', right: '$', display: false }
-									],
-									ignoredTags: ['pre', 'code', 'script', 'textarea'],
-									throwOnError: false
-								});
-							}
-							
-							// 若 highlight.js 从 CDN 加载成功，则给题解代码块加语法高亮；失败时代码保持纯文本
-							if (typeof hljs !== 'undefined') {
-								var langMap = {
-									python3: 'python', python: 'python', py: 'python',
-									golang: 'go', go: 'go',
-									'c++': 'cpp', cpp: 'cpp', c: 'c',
-									java: 'java', javascript: 'javascript', js: 'javascript',
-									rust: 'rust', typescript: 'typescript'
-								};
-								document.querySelectorAll('.solution-content pre code').forEach(function(el) {
-									var m = (el.className || '').match(/language-(\S+)/);
-									var lang = m ? langMap[m[1].toLowerCase()] : null;
-									if (lang && hljs.getLanguage(lang)) {
-										el.innerHTML = hljs.highlight(el.textContent, { language: lang }).value;
+							// 代码语法高亮（highlight.js 为本地 vendor 资源）：按 VSCode 主题明暗使用
+							// GitHub 明/暗两套配色；任何异常只影响单块代码，不影响其余内容
+							try {
+								if (typeof hljs !== 'undefined') {
+									var langMap = {
+										python3: 'python', python: 'python', py: 'python',
+										golang: 'go', go: 'go',
+										'c++': 'cpp', cpp: 'cpp', c: 'c',
+										java: 'java', javascript: 'javascript', js: 'javascript',
+										rust: 'rust', typescript: 'typescript'
+									};
+									var bgMatch = getComputedStyle(document.body).backgroundColor.match(/\d+/g);
+									if (bgMatch) {
+										var luminance = 0.2126 * Number(bgMatch[0]) + 0.7152 * Number(bgMatch[1]) + 0.0722 * Number(bgMatch[2]);
+										if (luminance < 160) {
+											document.body.style.setProperty('--hljs-base', '#e6edf3');
+											document.body.style.setProperty('--hljs-keyword', '#ff7b72');
+											document.body.style.setProperty('--hljs-string', '#a5d6ff');
+											document.body.style.setProperty('--hljs-comment', '#8b949e');
+											document.body.style.setProperty('--hljs-title', '#d2a8ff');
+											document.body.style.setProperty('--hljs-number', '#79c0ff');
+											document.body.style.setProperty('--hljs-built', '#ffa657');
+										}
 									}
+									document.querySelectorAll('.solution-content pre code').forEach(function(el) {
+										try {
+											var m = (el.className || '').match(/language-(\S+)/);
+											var lang = m ? langMap[m[1].toLowerCase()] : null;
+											if (lang && hljs.getLanguage(lang)) {
+												el.innerHTML = hljs.highlight(el.textContent, { language: lang }).value;
+											}
+										} catch (e) {}
+									});
+								}
+							} catch (e) {}
+							
+							// 视频题解（LeetCode 内部 CDN 可能防盗链）：内嵌播放失败时自动降级为浏览器按钮
+							document.querySelectorAll('video.article-video').forEach(function(v) {
+								v.addEventListener('error', function() {
+									var btn = document.createElement('button');
+									btn.className = 'video-link';
+									btn.textContent = '🎬 视频题解：在浏览器中播放';
+									btn.onclick = function() { vscode.postMessage({ type: 'openExternal', url: v.getAttribute('data-page-url') }); };
+									v.replaceWith(btn);
 								});
-							}
+							});
+							
+							// 若 KaTeX 从 CDN 加载成功，则渲染 $$/$ 数学公式；失败时公式保留为原文
+							try {
+								if (typeof renderMathInElement !== 'undefined') {
+									renderMathInElement(document.body, {
+										delimiters: [
+											{ left: '$$', right: '$$', display: true },
+											{ left: '$', right: '$', display: false }
+										],
+										ignoredTags: ['pre', 'code', 'script', 'textarea'],
+										throwOnError: false
+									});
+								}
+							} catch (e) {}
 					</script>
 					</body>
 </html>
