@@ -97,7 +97,7 @@ src/
 
 3. **题解代码的来源**：`question.solution` 的 content 只有文字 + playground iframe，代码抓不到；真正带完整代码的题解是社区题解文章（`getSolutionArticles` → `getSolutionArticle`），其中 `byLeetcode: true` 的**官方文章**（如 `liang-shu-zhi-he-by-leetcode-solution`）包含官方的完整多语言代码（markdown 围栏 ` ```Java [sol1-Java]` 之类），且始终排在 `MOST_UPVOTE` 前 10 内。
 
-4. **webview 渲染的可靠性**：早期实现依赖 webview 里 CDN 加载的 `marked`（新版可能 API 变化/加载失败）和脚本执行顺序（`processCodeTabs` 定义在页面底部，早期内联代码块脚本可能先于其执行），容易导致代码不渲染。**当前方案** `renderMarkdownToHtml()` 直接在扩展端（TypeScript）完成完整 Markdown → 静态 HTML 渲染（标题/列表/表格/图片/代码块等），不依赖 CDN marked，确保内容一定能显示。`codeMode: 'all'` 时保留全部语言并生成标签页（`preferredFirst` 时优先语言 Python3/Python → C/C++ → 其他 排首位并默认选中，用于官方题解，接近网页版切换体验；社区题解保持原文顺序）；`'preferred'` 时只保留优先语言（用于 question.solution 文字回退）。KaTeX 公式与 highlight.js 语法高亮为 webview 内 CDN 可选增强，加载失败不影响内容显示。
+4. **webview 渲染的可靠性**：早期实现依赖 webview 里 CDN 加载的 `marked`（新版可能 API 变化/加载失败）和脚本执行顺序（`processCodeTabs` 定义在页面底部，早期内联代码块脚本可能先于其执行），容易导致代码不渲染。**当前方案** `renderMarkdownToHtml()` 直接在扩展端（TypeScript）完成完整 Markdown → 静态 HTML 渲染（标题/列表/表格/图片/代码块等），不依赖 CDN marked，确保内容一定能显示。`codeMode: 'all'` 时保留全部语言并生成标签页（`preferredFirst` 时优先语言 Python3/Python → C/C++ → 其他 排首位并默认选中，用于官方题解，接近网页版切换体验；社区题解保持原文顺序）；`'preferred'` 时只保留优先语言（用于 question.solution 文字回退）。KaTeX 公式为 webview 内 CDN 可选增强（加载失败不影响内容显示）；highlight.js（`vendor/highlight.min.js` + `vendor/highlight-github.min.css`）为本地资源随扩展打包，题解代码语法高亮不依赖网络。注意 `.vscodeignore` 排除了 `src/**`，本地资源必须放 `vendor/` 或 `out/` 才会进 VSIX。
 
 5. **`marked` 依赖**：`package.json` 里保留了 `marked` 依赖，但主流程（extension.ts）已不 `require` 也不在 webview 加载它（只 `webviewUtils.ts` 死代码还引用 CDN）。不要误以为需要打包 `node_modules`。
 

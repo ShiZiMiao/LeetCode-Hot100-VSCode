@@ -4,6 +4,8 @@
  */
 
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { AuthManager } from './core/authManager';
 import { LeetCodeApi, Question } from './core/leetcodeApi';
 import { Hot100Provider } from './views/hot100Provider';
@@ -311,6 +313,25 @@ function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'prefe
 
 // 状态栏项
 let statusBarItem: vscode.StatusBarItem;
+
+// highlight.js 本地资源（vendor/ 随扩展打包，.vscodeignore 未排除），
+// 避免 CDN 不可达导致语法高亮静默失效
+let highlightAssets: { css: string; js: string } | null = null;
+
+function getHighlightAssets(context: vscode.ExtensionContext): { css: string; js: string } | null {
+	if (highlightAssets) {
+		return highlightAssets;
+	}
+	try {
+		highlightAssets = {
+			css: fs.readFileSync(path.join(context.extensionPath, 'vendor', 'highlight-github.min.css'), 'utf8'),
+			js: fs.readFileSync(path.join(context.extensionPath, 'vendor', 'highlight.min.js'), 'utf8')
+		};
+		return highlightAssets;
+	} catch (e) {
+		return null;
+	}
+}
 
 export function activate(context: vscode.ExtensionContext) {
 	console.log('LeetCode Extension is now active!');
@@ -621,8 +642,10 @@ export function activate(context: vscode.ExtensionContext) {
 				const difficulty = difficultyMap[q.difficulty] || q.difficulty;
 
 				// 生成带标签页的面板HTML
-				const generatePanelHtml = (activeTab: string, solutionContent: string = '') => `
-					<!DOCTYPE html>
+const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
+						const hljsAssets = getHighlightAssets(context);
+						return `
+						<!DOCTYPE html>
 					<html lang="zh-CN">
 					<head>
 						<meta charset="UTF-8">
@@ -866,9 +889,8 @@ export function activate(context: vscode.ExtensionContext) {
 							<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-							<!-- 加载 highlight.js 用于代码语法高亮（可选增强，失败时代码保持纯文本） -->
-							<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
-							<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/common.min.js"></script>
+							<!-- 加载 highlight.js 用于代码语法高亮（本地 vendor 资源，无 CDN 依赖） -->
+							${hljsAssets ? `<style>${hljsAssets.css}</style><script>${hljsAssets.js}</script>` : '<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/styles/github.min.css"><script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>'}
 					</head>
 					<body>
 						<div class="tabs">
@@ -953,10 +975,11 @@ function selectLangTab(btn) {
 							}
 					</script>
 					</body>
-					</html>
-				`;
+</html>
+					`;
+					};
 
-				panel.webview.html = generatePanelHtml('problem');
+					panel.webview.html = generatePanelHtml('problem');
 
 				// 处理消息
 				panel.webview.onDidReceiveMessage(async (message) => {
