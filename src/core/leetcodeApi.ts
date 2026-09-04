@@ -91,6 +91,49 @@ export class LeetCodeApi {
         return this.request('GET', path);
     }
 
+    /**
+     * 下载二进制资源（视频题解等），携带会话 Cookie 通过防盗链校验。
+     * 视频 CDN（video.leetcode.cn）要求登录态，webview 跨域请求不带 Cookie，
+     * 只能由扩展端下载后写入本地文件，再通过 asWebviewUri 交给 webview 播放。
+     */
+    async downloadBinary(url: string): Promise<Buffer> {
+        const u = new URL(url);
+        const headers = await this.getHeaders();
+        headers['Accept'] = '*/*';
+        headers['Referer'] = `https://${LeetCodeApi.HOSTNAME}/`;
+        headers['Origin'] = `https://${LeetCodeApi.HOSTNAME}`;
+        return new Promise((resolve, reject) => {
+            const req = https.request(
+                {
+                    hostname: u.hostname,
+                    port: 443,
+                    path: u.pathname,
+                    method: 'GET',
+                    headers: headers,
+                    rejectUnauthorized: false
+                },
+                (res) => {
+                    if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                        const location = res.headers.location;
+                        const next = location.startsWith('http') ? location : new URL(location, url).toString();
+                        req.destroy();
+                        resolve(this.downloadBinary(next));
+                        return;
+                    }
+                    if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                        const chunks: Buffer[] = [];
+                        res.on('data', (chunk) => chunks.push(chunk));
+                        res.on('end', () => resolve(Buffer.concat(chunks)));
+                    } else {
+                        reject(new Error(`download failed with status ${res.statusCode}`));
+                    }
+                }
+            );
+            req.on('error', reject);
+            req.end();
+        });
+    }
+
     async getUserProfile(): Promise<any> {
         // 使用 globalData 查询获取用户状态（参考 leetcode-runner 的 USER_STATUS_QUERY）
         const query = `

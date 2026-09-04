@@ -6,6 +6,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as vm from 'vm';
 import { AuthManager } from './core/authManager';
 import { LeetCodeApi, Question } from './core/leetcodeApi';
 import { Hot100Provider } from './views/hot100Provider';
@@ -104,9 +105,10 @@ function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 	let s = escapeHtml(text);
 	s = s.replace(/!\[([^\]]*\.(?:mp4|webm))\]\(([^)\s]+)\)/gi, (m, alt, url) => {
 		if (videoPageUrl) {
-			// 视频在 LeetCode 内部 CDN（可能防盗链）：先尝试内嵌播放，失败时页面脚本自动降级为浏览器按钮
+			// 视频在 LeetCode 内部 CDN（需登录态）：点击后由扩展端携带会话 Cookie 缓存，
+			// 成功则内嵌播放，失败自动降级为浏览器播放入口
 			const src = url + (/\.(mp4|webm)$/i.test(url) ? '' : '.mp4');
-			return `<video class="article-video" data-page-url="${videoPageUrl}" controls preload="metadata" src="https://video.leetcode.cn/${src}">视频题解无法在插件内播放</video>`;
+			return `<button class="video-link" data-video-url="https://video.leetcode.cn/${src}" data-page-url="${videoPageUrl}" onclick="playArticleVideo(this)">🎬 播放视频题解</button>`;
 		}
 		return `<span class="img-placeholder">[视频：${alt}]</span>`;
 	});
@@ -132,7 +134,17 @@ function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 
 function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 	const cls = block.lang ? `language-${escapeHtml(block.lang)}` : '';
-	return `<pre><code class="${cls}">${escapeHtml(block.code)}</code></pre>`;
+	// 高亮在扩展端完成：HTML 直接带 hljs 高亮标签，webview 无需脚本，代码显示不依赖网络
+	let inner = escapeHtml(block.code);
+	const lang = highlightLangName(block.lang);
+	if (hljsRuntime && lang && hljsRuntime.getLanguage(lang)) {
+		try {
+			inner = hljsRuntime.highlight(block.code, { language: lang }).value;
+		} catch (e) {
+			// 单个代码块高亮失败时回退为纯文本，不影响显示
+		}
+	}
+	return `<pre><code class="${cls}">${inner}</code></pre>`;
 }
 
 /**
@@ -317,8 +329,9 @@ function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'prefe
 let statusBarItem: vscode.StatusBarItem;
 
 // highlight.js 本地资源（vendor/ 随扩展打包，.vscodeignore 未排除），
-// 避免 CDN 不可达导致语法高亮静默失效
+// 在扩展端执行并直接产出高亮 HTML，webview 无需再运行任何高亮脚本
 let highlightJsContent: string | null = null;
+let hljsRuntime: any = null;
 
 function getHighlightJs(context: vscode.ExtensionContext): string | null {
 	if (highlightJsContent !== null) {
@@ -332,8 +345,36 @@ function getHighlightJs(context: vscode.ExtensionContext): string | null {
 	}
 }
 
+/** 在扩展端执行 vendored highlight.js（函数包裹避免 var 泄漏到全局），失败返回 null */
+function loadHljsRuntime(context: vscode.ExtensionContext): any {
+	try {
+		const js = getHighlightJs(context);
+		if (!js) {
+			return null;
+		}
+		return vm.runInThisContext(`(function () {${js}\n;return hljs;})()`, { filename: 'vendor/highlight.min.js' });
+	} catch (e) {
+		return null;
+	}
+}
+
+/** 语言标识 → highlight.js 语言名（py → python、cpp → cpp 等） */
+const HLJS_LANG_MAP: Record<string, string> = {
+	python3: 'python', python: 'python', py: 'python',
+	golang: 'go', go: 'go', 'c++': 'cpp', cpp: 'cpp', c: 'c',
+	java: 'java', javascript: 'javascript', js: 'javascript',
+	rust: 'rust', typescript: 'typescript', ts: 'typescript'
+};
+
+function highlightLangName(lang: string): string | null {
+	return HLJS_LANG_MAP[lang.toLowerCase()] || null;
+}
+
 export function activate(context: vscode.ExtensionContext) {
 	console.log('LeetCode Extension is now active!');
+
+	// 在扩展端加载 vendored highlight.js，题解代码高亮不依赖网络与 webview 脚本
+	hljsRuntime = loadHljsRuntime(context);
 
 	const authManager = new AuthManager(context);
 	const leetCodeApi = new LeetCodeApi(authManager);
@@ -642,7 +683,6 @@ export function activate(context: vscode.ExtensionContext) {
 
 				// 生成带标签页的面板HTML
 const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
-						const hljsJs = getHighlightJs(context);
 						return `
 						<!DOCTYPE html>
 					<html lang="zh-CN">
@@ -911,8 +951,7 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-							<!-- 加载 highlight.js（本地 vendor 资源，无 CDN 依赖）用于代码语法高亮 -->
-							${hljsJs ? `<script>${hljsJs}</script>` : '<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>'}
+							<!-- 代码语法高亮由扩展端渲染时完成（vendored highlight.js），webview 仅需配色变量 -->
 					</head>
 					<body>
 						<div class="tabs">
@@ -966,51 +1005,60 @@ function selectLangTab(btn) {
 								box.querySelectorAll('.lang-code-block')[idx].classList.add('active');
 							}
 							
-							// 代码语法高亮（highlight.js 为本地 vendor 资源）：按 VSCode 主题明暗使用
-							// GitHub 明/暗两套配色；任何异常只影响单块代码，不影响其余内容
+							// 代码高亮由扩展端渲染完成；这里仅按 VSCode 主题明暗切换高亮配色（纯 CSS 变量）
 							try {
-								if (typeof hljs !== 'undefined') {
-									var langMap = {
-										python3: 'python', python: 'python', py: 'python',
-										golang: 'go', go: 'go',
-										'c++': 'cpp', cpp: 'cpp', c: 'c',
-										java: 'java', javascript: 'javascript', js: 'javascript',
-										rust: 'rust', typescript: 'typescript'
-									};
-									var bgMatch = getComputedStyle(document.body).backgroundColor.match(/\d+/g);
-									if (bgMatch) {
-										var luminance = 0.2126 * Number(bgMatch[0]) + 0.7152 * Number(bgMatch[1]) + 0.0722 * Number(bgMatch[2]);
-										if (luminance < 160) {
-											document.body.style.setProperty('--hljs-base', '#e6edf3');
-											document.body.style.setProperty('--hljs-keyword', '#ff7b72');
-											document.body.style.setProperty('--hljs-string', '#a5d6ff');
-											document.body.style.setProperty('--hljs-comment', '#8b949e');
-											document.body.style.setProperty('--hljs-title', '#d2a8ff');
-											document.body.style.setProperty('--hljs-number', '#79c0ff');
-											document.body.style.setProperty('--hljs-built', '#ffa657');
-										}
+								var hlBg = getComputedStyle(document.body).backgroundColor.match(/\d+/g);
+								if (hlBg) {
+									var hlLum = 0.2126 * Number(hlBg[0]) + 0.7152 * Number(hlBg[1]) + 0.0722 * Number(hlBg[2]);
+									if (hlLum < 160) {
+										document.body.style.setProperty('--hljs-base', '#e6edf3');
+										document.body.style.setProperty('--hljs-keyword', '#ff7b72');
+										document.body.style.setProperty('--hljs-string', '#a5d6ff');
+										document.body.style.setProperty('--hljs-comment', '#8b949e');
+										document.body.style.setProperty('--hljs-title', '#d2a8ff');
+										document.body.style.setProperty('--hljs-number', '#79c0ff');
+										document.body.style.setProperty('--hljs-built', '#ffa657');
 									}
-									document.querySelectorAll('.solution-content pre code').forEach(function(el) {
-										try {
-											var m = (el.className || '').match(/language-(\S+)/);
-											var lang = m ? langMap[m[1].toLowerCase()] : null;
-											if (lang && hljs.getLanguage(lang)) {
-												el.innerHTML = hljs.highlight(el.textContent, { language: lang }).value;
-											}
-										} catch (e) {}
-									});
 								}
 							} catch (e) {}
 							
-							// 视频题解（LeetCode 内部 CDN 可能防盗链）：内嵌播放失败时自动降级为浏览器按钮
-							document.querySelectorAll('video.article-video').forEach(function(v) {
-								v.addEventListener('error', function() {
-									var btn = document.createElement('button');
-									btn.className = 'video-link';
-									btn.textContent = '🎬 视频题解：在浏览器中播放';
-									btn.onclick = function() { vscode.postMessage({ type: 'openExternal', url: v.getAttribute('data-page-url') }); };
-									v.replaceWith(btn);
+							// 视频题解：请求扩展端携带会话 Cookie 缓存视频，成功后内嵌播放；
+							// 缓存失败时降级为浏览器播放入口
+							function playArticleVideo(btn) {
+								btn.setAttribute('data-loading', '1');
+								btn.textContent = '⏳ 正在加载视频…';
+								btn.disabled = true;
+								vscode.postMessage({
+									type: 'playVideo',
+									url: btn.getAttribute('data-video-url'),
+									pageUrl: btn.getAttribute('data-page-url')
 								});
+							}
+							
+							function makeVideoBrowserFallback(pageUrl) {
+								var fb = document.createElement('button');
+								fb.className = 'video-link';
+								fb.textContent = '🎬 视频题解：在浏览器中播放';
+								fb.onclick = function() { vscode.postMessage({ type: 'openExternal', url: pageUrl }); };
+								return fb;
+							}
+							
+							window.addEventListener('message', function(ev) {
+								var msg = ev.data;
+								if (!msg || msg.type !== 'videoReady') return;
+								var btn = document.querySelector('.video-link[data-loading="1"]');
+								if (!btn) return;
+								if (msg.src) {
+									var v = document.createElement('video');
+									v.className = 'article-video';
+									v.controls = true;
+									v.autoplay = true;
+									v.src = msg.src;
+									v.addEventListener('error', function() { btn.replaceWith(makeVideoBrowserFallback(msg.pageUrl)); });
+									btn.replaceWith(v);
+								} else {
+									btn.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
+								}
 							});
 							
 							// 若 KaTeX 从 CDN 加载成功，则渲染 $$/$ 数学公式；失败时公式保留为原文
@@ -1147,6 +1195,36 @@ function selectLangTab(btn) {
 							panel.webview.html = generatePanelHtml('solution', solutionHtml);
 						} catch (error) {
 							panel.webview.html = generatePanelHtml('solution', `<div class="loading">加载题解失败: ${error}</div>`);
+						}
+					} else if (message.type === 'playVideo') {
+						try {
+							const videoUrl = typeof message.url === 'string' ? message.url : '';
+							if (!/^https:\/\/video\.leetcode\.cn\/[-\w]+\.(mp4|webm)$/i.test(videoUrl)) {
+								throw new Error('无效的视频地址');
+							}
+							let fileUri: vscode.Uri | null = null;
+							await vscode.window.withProgress({
+								location: vscode.ProgressLocation.Notification,
+								title: '正在缓存视频题解…',
+								cancellable: false
+							}, async () => {
+								const buffer = await leetCodeApi.downloadBinary(videoUrl);
+								if (buffer.length === 0) {
+									throw new Error('视频为空');
+								}
+								const dirUri = vscode.Uri.joinPath(context.globalStorageUri, 'video');
+								await vscode.workspace.fs.createDirectory(dirUri);
+								fileUri = vscode.Uri.joinPath(dirUri, path.basename(new URL(videoUrl).pathname));
+								await vscode.workspace.fs.writeFile(fileUri, new Uint8Array(buffer));
+							});
+							panel.webview.postMessage({
+								type: 'videoReady',
+								src: fileUri ? panel.webview.asWebviewUri(fileUri).toString() : null,
+								pageUrl: message.pageUrl
+							});
+						} catch (error) {
+							// 视频加载失败（如未登录）时降级为浏览器播放入口
+							panel.webview.postMessage({ type: 'videoReady', src: null, pageUrl: message.pageUrl });
 						}
 					} else if (message.type === 'openExternal' && typeof message.url === 'string' && message.url.startsWith('https://leetcode.cn/')) {
 							// 视频题解等无法在 webview 内播放的内容，交给系统默认浏览器打开
