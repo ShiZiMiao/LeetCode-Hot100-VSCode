@@ -1177,8 +1177,19 @@ function selectLangTab(btn) {
 
 					panel.webview.html = generatePanelHtml('problem');
 
-				// 处理消息
+				// 处理消息（外层兜底：任何异常都提示用户，避免静默失败）
 				panel.webview.onDidReceiveMessage(async (message) => {
+					try {
+						await handlePanelMessage(message, panel, q);
+					} catch (error) {
+						vscode.window.showErrorMessage(`处理操作失败: ${error instanceof Error ? error.message : String(error)}`);
+					}
+				});
+
+				/**
+				 * 题解面板消息处理（抽出来便于外层统一兜底错误提示）
+				 */
+				async function handlePanelMessage(message: any, panel: vscode.WebviewPanel, q: any) {
 					if (message.type === 'loadSolution') {
 						try {
 							// 获取官方题解
@@ -1341,7 +1352,7 @@ function selectLangTab(btn) {
 							vscode.window.showErrorMessage(`加载题解失败: ${error}`);
 						}
 					}
-				});
+				}
 			}
 		} catch (error) {
 			vscode.window.showErrorMessage(`加载题目失败: ${error}`);
