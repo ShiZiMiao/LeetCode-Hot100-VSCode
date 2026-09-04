@@ -1,6 +1,7 @@
 
 import { AuthManager } from './authManager';
 import * as https from 'https';
+import * as crypto from 'crypto';
 
 export interface Question {
     frontendQuestionId: string;
@@ -116,6 +117,53 @@ export class LeetCodeApi {
             }
         `;
         return this.postGraphql(query, { uuid });
+    }
+
+    /**
+     * 换取视频真实播放地址（阿里云 VOD GetPlayInfo，与网页端 Aliplayer 同款签名流程）。
+     * playAuth 解码后含临时 AccessKey/AuthInfo，签名请求 vod.{region}.aliyuncs.com，
+     * 返回签名后的 PlayURL（通常是 m3u8，需 hls.js 播放）。
+     */
+    async getVideoPlayUrl(uuid: string): Promise<{ videoUrl: string; videoId: string; coverUrl: string; playAuth: string }> {
+        const data = await this.getVideoInfo(uuid);
+        const info = data?.data?.videosVideoInfo;
+        if (!info?.playAuth || !info?.videoInfo?.videoId) {
+            throw new Error('未获取到播放凭证');
+        }
+        const decoded = JSON.parse(Buffer.from(info.playAuth, 'base64').toString('utf8'));
+        const enc = (s: string) => encodeURIComponent(s).replace(/\+/g, '%20').replace(/\*/g, '%2A').replace(/%7E/g, '~');
+        const params: Record<string, string> = {
+            AccessKeyId: decoded.AccessKeyId,
+            Action: 'GetPlayInfo',
+            VideoId: info.videoInfo.videoId,
+            AuthTimeout: '172800',
+            Rand: crypto.randomUUID().slice(0, 16),
+            SecurityToken: decoded.SecurityToken,
+            Format: 'JSON',
+            Version: '2017-03-21',
+            SignatureMethod: 'HMAC-SHA1',
+            SignatureVersion: '1.0',
+            SignatureNonce: crypto.randomUUID(),
+            PlayerVersion: '2.9.2',
+            Channel: 'HTML5',
+            AuthInfo: decoded.AuthInfo
+        };
+        const qs = Object.keys(params).sort().map(k => `${enc(k)}=${enc(params[k])}`).join('&');
+        const stringToSign = `GET&${enc('/')}&${enc(qs)}`;
+        const signature = crypto.createHmac('sha1', decoded.AccessKeySecret + '&').update(stringToSign).digest('base64');
+        const url = `https://vod.${decoded.Region || 'cn-shanghai'}.aliyuncs.com/?${qs}&Signature=${enc(signature)}`;
+        const res = await this.get(url);
+        const playInfos = res?.PlayInfoList?.PlayInfo || [];
+        const picked = playInfos.find((p: any) => p.Format === 'mp4') || playInfos.find((p: any) => p.Format === 'm3u8') || playInfos[0];
+        if (!picked?.PlayURL) {
+            throw new Error('未获取到视频地址');
+        }
+        return {
+            videoUrl: picked.PlayURL,
+            videoId: info.videoInfo.videoId,
+            coverUrl: info.videoInfo.coverUrl || '',
+            playAuth: info.playAuth
+        };
     }
 
     async getUserProfile(): Promise<any> {

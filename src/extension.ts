@@ -380,20 +380,22 @@ function isDarkEditorTheme(): boolean {
 	}
 }
 
-// Aliplayer（阿里云 VOD 播放器）本地资源，视频题解通过 playAuth 播放，不依赖 CDN
-let aliplayerFiles: { js: string; css: string } | null = null;
+// 视频播放资源（阿里云 Aliplayer + hls.js），本地 vendor，不依赖 CDN
+let playerFiles: { apiJs: string; apiCss: string; hlsJs: string } | null = null;
 
-function getAliplayerFiles(context: vscode.ExtensionContext): { js: string; css: string } | null {
-	if (aliplayerFiles) {
-		return aliplayerFiles;
+function getPlayerFiles(context: vscode.ExtensionContext): { apiJs: string; apiCss: string; hlsJs: string } | null {
+	if (playerFiles) {
+		return playerFiles;
 	}
-	const jsPath = path.join(context.extensionPath, 'vendor', 'aliplayer-min.js');
-	const cssPath = path.join(context.extensionPath, 'vendor', 'aliplayer-min.css');
-	if (!fs.existsSync(jsPath) || !fs.existsSync(cssPath)) {
+	const base = path.join(context.extensionPath, 'vendor');
+	const apiJs = path.join(base, 'aliplayer-min.js');
+	const apiCss = path.join(base, 'aliplayer-min.css');
+	const hlsJs = path.join(base, 'hls.min.js');
+	if (!fs.existsSync(apiJs) || !fs.existsSync(apiCss) || !fs.existsSync(hlsJs)) {
 		return null;
 	}
-	aliplayerFiles = { js: jsPath, css: cssPath };
-	return aliplayerFiles;
+	playerFiles = { apiJs, apiCss, hlsJs };
+	return playerFiles;
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -709,10 +711,11 @@ export function activate(context: vscode.ExtensionContext) {
 
 				// 生成带标签页的面板HTML
 const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
-						const aliplayerFiles = getAliplayerFiles(context);
-						const aliplayerView = aliplayerFiles ? {
-							css: panel.webview.asWebviewUri(vscode.Uri.file(aliplayerFiles.css)).toString(),
-							js: panel.webview.asWebviewUri(vscode.Uri.file(aliplayerFiles.js)).toString()
+						const playerFiles = getPlayerFiles(context);
+						const playerView = playerFiles ? {
+							css: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.apiCss)).toString(),
+							apiJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.apiJs)).toString(),
+							hlsJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.hlsJs)).toString()
 						} : null;
 						return `
 						<!DOCTYPE html>
@@ -972,6 +975,12 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 								border-radius: 8px;
 								margin: 8px 0;
 							}
+							.article-video video {
+								width: 100%;
+								border-radius: 8px;
+								background: #000;
+								max-height: 480px;
+							}
 							.img-placeholder {
 								color: var(--vscode-descriptionForeground);
 							}
@@ -1004,8 +1013,8 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-							<!-- 加载 Aliplayer 阿里云播放器（本地 vendor 资源）用于视频题解 -->
-							${aliplayerView ? `<link rel="stylesheet" href="${aliplayerView.css}"><script src="${aliplayerView.js}"></script>` : ''}
+							<!-- 加载视频播放资源（Aliplayer + hls.js，本地 vendor）：HLS 走 hls.js，Aliplayer 兜底 -->
+							${playerView ? `<link rel="stylesheet" href="${playerView.css}"><script src="${playerView.apiJs}"></script><script src="${playerView.hlsJs}"></script>` : ''}
 							<!-- 代码语法高亮由扩展端渲染时完成（vendored highlight.js），webview 仅需配色变量 -->
 					</head>
 					<body>
@@ -1081,19 +1090,11 @@ function selectLangTab(btn) {
 								return fb;
 							}
 							
-							window.addEventListener('message', function(ev) {
-								var msg = ev.data;
-								if (!msg || msg.type !== 'videoReady') return;
-								var btn = document.querySelector('.video-link[data-loading="1"]');
-								if (!btn) return;
-								if (typeof Aliplayer === 'undefined' || msg.error || !msg.videoId || !msg.playAuth) {
-									btn.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
+							function attachAliplayer(container, msg) {
+								if (typeof Aliplayer === 'undefined' || !msg.videoId || !msg.playAuth) {
+									container.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
 									return;
 								}
-								var container = document.createElement('div');
-								container.className = 'article-video';
-								container.id = 'lc-aliplayer-' + Date.now();
-								btn.replaceWith(container);
 								try {
 									new Aliplayer({
 										id: container.id,
@@ -1109,6 +1110,50 @@ function selectLangTab(btn) {
 								} catch (e) {
 									container.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
 								}
+							}
+							
+							window.addEventListener('message', function(ev) {
+								var msg = ev.data;
+								if (!msg || msg.type !== 'videoReady') return;
+								var btn = document.querySelector('.video-link[data-loading="1"]');
+								if (!btn) return;
+								var container = document.createElement('div');
+								container.className = 'article-video';
+								container.id = 'lc-video-' + Date.now();
+								btn.replaceWith(container);
+								// 无直链（凭证获取失败等）时尝试 Aliplayer，再不行给浏览器入口
+								if (msg.error || !msg.videoUrl) {
+									attachAliplayer(container, msg);
+									return;
+								}
+								var v = document.createElement('video');
+								v.controls = true;
+								v.autoplay = true;
+								v.playsInline = true;
+								v.poster = msg.coverUrl || '';
+								container.appendChild(v);
+								var isHls = /\.m3u8(\?|$)/i.test(msg.videoUrl || '');
+								var fallbackOnFail = function() { attachAliplayer(container, msg); };
+								if (isHls && typeof Hls !== 'undefined' && Hls.isSupported()) {
+									try {
+										var hls = new Hls({ enableWorker: true });
+										hls.loadSource(msg.videoUrl);
+										hls.attachMedia(v);
+										hls.on(Hls.Events.ERROR, function(evt, data) {
+											if (data && data.fatal) {
+												try { hls.destroy(); } catch (e2) {}
+												fallbackOnFail();
+											}
+										});
+									} catch (e) {
+										fallbackOnFail();
+										return;
+									}
+								} else {
+									v.addEventListener('error', fallbackOnFail);
+									v.src = msg.videoUrl;
+								}
+								v.play().catch(function() {});
 							});
 							
 							// 若 KaTeX 从 CDN 加载成功，则渲染 $$/$ 数学公式；失败时公式保留为原文
@@ -1252,23 +1297,20 @@ function selectLangTab(btn) {
 							if (!/^[0-9a-fA-F-]{20,40}$/.test(uuid)) {
 								throw new Error('无效的视频标识');
 							}
-							let info: any = null;
-							await vscode.window.withProgress({
+							let play: { videoUrl: string; videoId: string; coverUrl: string; playAuth: string };
+							play = await vscode.window.withProgress({
 								location: vscode.ProgressLocation.Notification,
-								title: '正在获取视频播放信息…',
+								title: '正在获取视频播放地址…',
 								cancellable: false
 							}, async () => {
-								const data = await leetCodeApi.getVideoInfo(uuid);
-								info = data?.data?.videosVideoInfo;
+								return await leetCodeApi.getVideoPlayUrl(uuid);
 							});
-							if (!info?.playAuth || !info?.videoInfo?.videoId) {
-								throw new Error('未获取到播放凭证');
-							}
 							panel.webview.postMessage({
 								type: 'videoReady',
-								videoId: info.videoInfo.videoId,
-								playAuth: info.playAuth,
-								coverUrl: info.videoInfo.coverUrl || '',
+								videoUrl: play.videoUrl,
+								videoId: play.videoId,
+								playAuth: play.playAuth,
+								coverUrl: play.coverUrl || '',
 								pageUrl: message.pageUrl
 							});
 						} catch (error) {
