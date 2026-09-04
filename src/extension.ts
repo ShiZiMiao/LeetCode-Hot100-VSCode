@@ -134,7 +134,8 @@ function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 
 function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 	const cls = block.lang ? `language-${escapeHtml(block.lang)}` : '';
-	// 高亮在扩展端完成：HTML 直接带 hljs 高亮标签，webview 无需脚本，代码显示不依赖网络
+	const themeClass = isDarkEditorTheme() ? 'hljs-dark' : '';
+	// 高亮在扩展端完成：HTML 直接带 hljs 高亮标签，代码显示不依赖网络与 webview 脚本
 	let inner = escapeHtml(block.code);
 	const lang = highlightLangName(block.lang);
 	if (hljsRuntime && lang && hljsRuntime.getLanguage(lang)) {
@@ -144,7 +145,7 @@ function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 			// 单个代码块高亮失败时回退为纯文本，不影响显示
 		}
 	}
-	return `<pre><code class="${cls}">${inner}</code></pre>`;
+	return `<pre><code class="${cls}${themeClass ? ' ' + themeClass : ''}">${inner}</code></pre>`;
 }
 
 /**
@@ -368,6 +369,15 @@ const HLJS_LANG_MAP: Record<string, string> = {
 
 function highlightLangName(lang: string): string | null {
 	return HLJS_LANG_MAP[lang.toLowerCase()] || null;
+}
+
+/** 按 VSCode 当前主题决定代码配色（渲染时静态写入 HTML，webview 不再切换） */
+function isDarkEditorTheme(): boolean {
+	try {
+		return vscode.window.activeColorTheme?.kind !== vscode.ColorThemeKind.Light;
+	} catch (e) {
+		return true;
+	}
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -892,27 +902,49 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							.code-tabs-container {
 								margin: 16px 0;
 							}
-							/* 代码语法高亮配色（GitHub 明/暗两套，暗色由页面脚本按主题亮度切换 CSS 变量） */
+							/* 代码语法高亮配色（GitHub 明/暗，由扩展端按 VSCode 主题在渲染时静态选择） */
 							.solution-content pre code {
-								color: var(--hljs-base, #24292e);
+								color: #24292e;
 							}
-							.hljs-keyword, .hljs-literal, .hljs-selector-tag, .hljs-name {
-								color: var(--hljs-keyword, #d73a49);
+							.solution-content .hljs-keyword, .solution-content .hljs-literal, .solution-content .hljs-selector-tag, .solution-content .hljs-name {
+								color: #d73a49;
 							}
-							.hljs-string, .hljs-regexp, .hljs-addition, .hljs-char.escape_ {
-								color: var(--hljs-string, #032f62);
+							.solution-content .hljs-string, .solution-content .hljs-regexp, .solution-content .hljs-addition, .solution-content .hljs-char.escape_ {
+								color: #032f62;
 							}
-							.hljs-comment, .hljs-quote, .hljs-meta, .hljs-doctag {
-								color: var(--hljs-comment, #6a737d);
+							.solution-content .hljs-comment, .solution-content .hljs-quote, .solution-content .hljs-meta, .solution-content .hljs-doctag {
+								color: #6a737d;
 							}
-							.hljs-title, .hljs-title.class_, .hljs-title.function_, .hljs-section {
-								color: var(--hljs-title, #6f42c1);
+							.solution-content .hljs-title, .solution-content .hljs-title.class_, .solution-content .hljs-title.function_, .solution-content .hljs-section {
+								color: #6f42c1;
 							}
-							.hljs-number, .hljs-symbol, .hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable {
-								color: var(--hljs-number, #005cc5);
+							.solution-content .hljs-number, .solution-content .hljs-symbol, .solution-content .hljs-attr, .solution-content .hljs-attribute, .solution-content .hljs-variable, .solution-content .hljs-template-variable {
+								color: #005cc5;
 							}
-							.hljs-built_in, .hljs-type, .hljs-params, .hljs-variable.language_ {
-								color: var(--hljs-built, #e36209);
+							.solution-content .hljs-built_in, .solution-content .hljs-type, .solution-content .hljs-params, .solution-content .hljs-variable.language_ {
+								color: #e36209;
+							}
+							/* 暗色主题（GitHub Dark 配色） */
+							.solution-content code.hljs-dark {
+								color: #e6edf3;
+							}
+							.solution-content code.hljs-dark .hljs-keyword, .solution-content code.hljs-dark .hljs-literal, .solution-content code.hljs-dark .hljs-selector-tag, .solution-content code.hljs-dark .hljs-name {
+								color: #ff7b72;
+							}
+							.solution-content code.hljs-dark .hljs-string, .solution-content code.hljs-dark .hljs-regexp, .solution-content code.hljs-dark .hljs-addition, .solution-content code.hljs-dark .hljs-char.escape_ {
+								color: #a5d6ff;
+							}
+							.solution-content code.hljs-dark .hljs-comment, .solution-content code.hljs-dark .hljs-quote, .solution-content code.hljs-dark .hljs-meta, .solution-content code.hljs-dark .hljs-doctag {
+								color: #8b949e;
+							}
+							.solution-content code.hljs-dark .hljs-title, .solution-content code.hljs-dark .hljs-title.class_, .solution-content code.hljs-dark .hljs-title.function_, .solution-content code.hljs-dark .hljs-section {
+								color: #d2a8ff;
+							}
+							.solution-content code.hljs-dark .hljs-number, .solution-content code.hljs-dark .hljs-symbol, .solution-content code.hljs-dark .hljs-attr, .solution-content code.hljs-dark .hljs-attribute, .solution-content code.hljs-dark .hljs-variable, .solution-content code.hljs-dark .hljs-template-variable {
+								color: #79c0ff;
+							}
+							.solution-content code.hljs-dark .hljs-built_in, .solution-content code.hljs-dark .hljs-type, .solution-content code.hljs-dark .hljs-params, .solution-content code.hljs-dark .hljs-variable.language_ {
+								color: #ffa657;
 							}
 							video.article-video {
 								max-width: 100%;
@@ -1004,23 +1036,6 @@ function selectLangTab(btn) {
 								btn.classList.add('active');
 								box.querySelectorAll('.lang-code-block')[idx].classList.add('active');
 							}
-							
-							// 代码高亮由扩展端渲染完成；这里仅按 VSCode 主题明暗切换高亮配色（纯 CSS 变量）
-							try {
-								var hlBg = getComputedStyle(document.body).backgroundColor.match(/\d+/g);
-								if (hlBg) {
-									var hlLum = 0.2126 * Number(hlBg[0]) + 0.7152 * Number(hlBg[1]) + 0.0722 * Number(hlBg[2]);
-									if (hlLum < 160) {
-										document.body.style.setProperty('--hljs-base', '#e6edf3');
-										document.body.style.setProperty('--hljs-keyword', '#ff7b72');
-										document.body.style.setProperty('--hljs-string', '#a5d6ff');
-										document.body.style.setProperty('--hljs-comment', '#8b949e');
-										document.body.style.setProperty('--hljs-title', '#d2a8ff');
-										document.body.style.setProperty('--hljs-number', '#79c0ff');
-										document.body.style.setProperty('--hljs-built', '#ffa657');
-									}
-								}
-							} catch (e) {}
 							
 							// 视频题解：请求扩展端携带会话 Cookie 缓存视频，成功后内嵌播放；
 							// 缓存失败时降级为浏览器播放入口
@@ -1223,7 +1238,8 @@ function selectLangTab(btn) {
 								pageUrl: message.pageUrl
 							});
 						} catch (error) {
-							// 视频加载失败（如未登录）时降级为浏览器播放入口
+							// 视频加载失败（如未登录）时降级为浏览器播放入口，并提示原因
+							vscode.window.showWarningMessage('视频题解缓存失败：登录状态可能已失效或被 CDN 拦截，请重新登录后再试');
 							panel.webview.postMessage({ type: 'videoReady', src: null, pageUrl: message.pageUrl });
 						}
 					} else if (message.type === 'openExternal' && typeof message.url === 'string' && message.url.startsWith('https://leetcode.cn/')) {

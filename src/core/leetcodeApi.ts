@@ -99,6 +99,8 @@ export class LeetCodeApi {
     async downloadBinary(url: string): Promise<Buffer> {
         const u = new URL(url);
         const headers = await this.getHeaders();
+        // 视频 CDN（Tengine）对 UA 有白名单，使用常见 Chrome UA，去掉扩展标识
+        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
         headers['Accept'] = '*/*';
         headers['Referer'] = `https://${LeetCodeApi.HOSTNAME}/`;
         headers['Origin'] = `https://${LeetCodeApi.HOSTNAME}`;
