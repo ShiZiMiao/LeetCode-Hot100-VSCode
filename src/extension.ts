@@ -26,28 +26,256 @@ function sanitizeSolutionContent(content: string): string {
 	return content.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
 }
 
+/** HTML 转义，防止代码注入 */
+function escapeHtml(text: string): string {
+	return text
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;');
+}
+
 /**
- * 从题目 codeSnippets 中按语言优先级挑选一个代码骨架展示。
- *
- * 优先级：Python(python3/python) > C/C++(c/cpp) > Java(java)。
- * 若都不存在，则回退到第一个可用的代码骨架。
+ * 把题解内容中少量内联 HTML 还原为 Markdown 文本，避免静态渲染时残留原始标签。
+ * 只处理安全的常用标签；iframe 等占位区域由调用方在渲染前移除。
  */
-function selectPreferredSnippet(snippets: any[]): any | undefined {
-	if (!snippets || snippets.length === 0) {
-		return undefined;
+function htmlToMarkdown(content: string): string {
+	let s = content;
+	s = s.replace(/<br\s*\/?>/gi, '\n');
+	s = s.replace(/<\/p>\s*/gi, '\n\n');
+	s = s.replace(/<p[^>]*>/gi, '');
+	s = s.replace(/<img[^>]*alt="([^"]*)"[^>]*src="([^"]*)"[^>]*>/gi, '![$1]($2)');
+	s = s.replace(/<img[^>]*src="([^"]*)"[^>]*>/gi, '![]($1)');
+	s = s.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
+	s = s.replace(/<\/h([1-6])>/gi, '\n\n');
+	s = s.replace(/<h([1-6])[^>]*>/gi, (m, n) => '\n\n' + '#'.repeat(Number(n)) + ' ');
+	s = s.replace(/<(\/?)strong[^>]*>/gi, '**');
+	s = s.replace(/<(\/?)b[^>]*>/gi, '**');
+	s = s.replace(/<(\/?)em[^>]*>/gi, '*');
+	s = s.replace(/<(\/?)i[^>]*>/gi, '*');
+	s = s.replace(/<(\/?)code[^>]*>/gi, '`');
+	s = s.replace(/<(\/?)del[^>]*>/gi, '~~');
+	s = s.replace(/<li[^>]*>/gi, '\n- ');
+	s = s.replace(/<\/li>/gi, '');
+	s = s.replace(/<\/?(ul|ol)[^>]*>/gi, '\n\n');
+	s = s.replace(/<\/?blockquote[^>]*>/gi, '\n> ');
+	s = s.replace(/<\/?(span|div)[^>]*>/gi, '');
+	s = s.replace(/<\/?[a-zA-Z][^>]*>/g, ''); // 兜底：移除其余未知标签
+	return s;
+}
+
+interface MarkdownCodeBlock {
+	lang: string;
+	code: string;
+}
+
+/** 代码语言优先级：Python3/Python > C/C++ > 其他（官方题解每组只展示一种语言时使用） */
+function codeLangPriority(lang: string): number {
+	const l = lang.toLowerCase().replace(/\s+/g, '');
+	if (l === 'python3' || l === 'python') {
+		return 0;
 	}
-	const priorityGroups = [
-		['python3', 'python'],
-		['c', 'cpp'],
-		['java']
-	];
-	for (const group of priorityGroups) {
-		const found = snippets.find((s: any) => group.includes((s.langSlug || '').toLowerCase()));
-		if (found) {
-			return found;
+	if (l === 'c' || l === 'c++' || l === 'cpp') {
+		return 1;
+	}
+	return 2;
+}
+
+/** 行内 Markdown 渲染（图片/链接/行内代码/粗体/斜体/删除线），文本先做 HTML 转义 */
+function renderInlineMarkdown(text: string): string {
+	let s = escapeHtml(text);
+	s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
+		if (/^https?:\/\//i.test(url)) {
+			return `<img src="${url}" alt="${alt}" />`;
+		}
+		return `<span class="img-placeholder">[图片：${alt || 'media'}]</span>`;
+	});
+	s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, url) => {
+		if (/^https?:\/\//i.test(url)) {
+			return `<a href="${url}">${text}</a>`;
+		}
+		return `${text}（${url}）`;
+	});
+	s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+	s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+	s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+	s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+	s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+	return s;
+}
+
+function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
+	const cls = block.lang ? `language-${escapeHtml(block.lang)}` : '';
+	return `<pre><code class="${cls}">${escapeHtml(block.code)}</code></pre>`;
+}
+
+/** 多语言代码块 → 语言标签页（社区题解保留全部语言时使用） */
+function renderCodeTabsHtml(blocks: MarkdownCodeBlock[]): string {
+	const tabs = blocks.map((b, idx) => `<button class="lang-tab${idx === 0 ? ' active' : ''}" onclick="selectLangTab(this)">${escapeHtml(b.lang || 'Code')}</button>`).join('');
+	const contents = blocks.map((b, idx) => `<div class="lang-code-block${idx === 0 ? ' active' : ''}">${renderCodeBlockHtml(b)}</div>`).join('');
+	return `<div class="code-tabs-container"><div class="lang-tabs">${tabs}</div>${contents}</div>`;
+}
+
+/** 相邻代码块组中，按优先级挑一种语言（Python3/Python → C/C++ → 其他首个） */
+function pickPreferredCodeBlock(blocks: MarkdownCodeBlock[]): MarkdownCodeBlock | null {
+	if (blocks.length === 0) {
+		return null;
+	}
+	for (const priority of [0, 1]) {
+		const picked = blocks.find(b => codeLangPriority(b.lang) === priority);
+		if (picked) {
+			return picked;
 		}
 	}
-	return snippets[0];
+	return blocks[0];
+}
+
+/**
+ * 轻量级 Markdown → HTML 渲染器（扩展端静态渲染，不依赖 webview 的 CDN marked）。
+ * 支持标题、段落、行内格式、图片/链接、列表、引用、分隔线、表格与围栏代码块。
+ * codeMode:
+ *   - 'preferred'：相邻的多语言代码块只保留一种（Python3/Python → C/C++ → 其他首个），
+ *     用于官方题解，避免同一解法刷屏多份语言代码；
+ *   - 'all'：保留全部代码块并按语言生成标签页，用于社区题解。
+ */
+function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'preferred'): string {
+	if (!md) {
+		return '';
+	}
+	const lines = htmlToMarkdown(md).split('\n');
+	const out: string[] = [];
+	// 围栏行：```lang [label] 或 ``` 均命中；语言从 ``` 后的内容提取，去掉 [label]
+	const fenceLineRe = /^\s*```\s*(.*)$/;
+	const fenceCloseRe = /^\s*```\s*$/;
+	let i = 0;
+
+	const isTableSeparator = (line: string) => /^\|[\s:|-]+\|$/.test(line.trim());
+	const splitTableRow = (line: string) => line.trim().slice(1, -1).split('|').map(c => c.trim());
+
+	while (i < lines.length) {
+		const line = lines[i];
+		const trimmed = line.trim();
+		const fenceMatch = line.match(fenceLineRe);
+
+		if (fenceMatch) {
+			// 收集相邻代码块（只允许空行分隔），组成一个"解法代码组"
+			const blocks: MarkdownCodeBlock[] = [];
+			let groupDone = false;
+			while (!groupDone && i < lines.length) {
+				const fm = lines[i].match(fenceLineRe);
+				if (!fm) {
+					break;
+				}
+				const lang = fm[1].trim().replace(/\s*\[.*\]$/, '');
+				i++;
+				const code: string[] = [];
+				while (i < lines.length && !fenceCloseRe.test(lines[i])) {
+					code.push(lines[i]);
+					i++;
+				}
+				if (i < lines.length) {
+					i++; // 跳过结束围栏
+				}
+				blocks.push({ lang, code: code.join('\n') });
+				// 后面只隔空行且还有带语言的围栏，则视为相邻块，继续收集
+				let j = i;
+				while (j < lines.length && lines[j].trim() === '') {
+					j++;
+				}
+				if (j < lines.length && /^\s*```\s*\S/.test(lines[j])) {
+					i = j;
+				} else {
+					groupDone = true;
+				}
+			}
+			if (codeMode === 'preferred') {
+				const picked = pickPreferredCodeBlock(blocks);
+				if (picked) {
+					out.push(renderCodeBlockHtml(picked));
+				}
+			} else {
+				out.push(blocks.length > 1 ? renderCodeTabsHtml(blocks) : renderCodeBlockHtml(blocks[0]));
+			}
+			continue;
+		}
+
+		if (trimmed === '' || trimmed === '[TOC]') {
+			i++;
+		} else if (/^#{1,6}\s+/.test(trimmed)) {
+			const level = trimmed.match(/^#+/)![0].length;
+			// 方法/章节标题（h2~h4）前补分隔线，避免多个解法连成一片
+			if (level <= 4 && out.length > 0) {
+				out.push('<hr>');
+			}
+			out.push(`<h${level}>${renderInlineMarkdown(trimmed.replace(/^#+\s*/, ''))}</h${level}>`);
+			i++;
+		} else if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) {
+			out.push('<hr>');
+			i++;
+		} else if (/^>\s?/.test(trimmed)) {
+			const quote: string[] = [];
+			while (i < lines.length && /^>\s?/.test(lines[i].trim())) {
+				quote.push(lines[i].trim().replace(/^>\s?/, ''));
+				i++;
+			}
+			out.push(`<blockquote>${renderInlineMarkdown(quote.join(' '))}</blockquote>`);
+		} else if (trimmed.startsWith('|') && trimmed.endsWith('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+			const header = splitTableRow(trimmed);
+			i += 2;
+			const rows: string[][] = [];
+			while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
+				rows.push(splitTableRow(lines[i]));
+				i++;
+			}
+			const thead = header.map(c => `<th>${renderInlineMarkdown(c)}</th>`).join('');
+			const tbody = rows.map(r => `<tr>${r.map(c => `<td>${renderInlineMarkdown(c)}</td>`).join('')}</tr>`).join('');
+			out.push(`<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`);
+		} else {
+			const listMatch = trimmed.match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
+			if (listMatch) {
+				const items: { indent: number; ordered: boolean; text: string }[] = [];
+				while (i < lines.length) {
+					const lm = lines[i].trim().match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
+					if (!lm) {
+						break;
+					}
+					items.push({ indent: lm[1].length, ordered: /^\d+\./.test(lm[2]), text: lm[3] });
+					i++;
+				}
+				let listHtml = '';
+				const stack: { tag: string; indent: number }[] = [];
+				for (const item of items) {
+					const tag = item.ordered ? 'ol' : 'ul';
+					while (stack.length > 0 && item.indent <= stack[stack.length - 1].indent) {
+						listHtml += `</${stack.pop()!.tag}>`;
+					}
+					if (stack.length === 0 || stack[stack.length - 1].tag !== tag) {
+						listHtml += `<${tag}>`;
+						stack.push({ tag, indent: item.indent });
+					}
+					listHtml += `<li>${renderInlineMarkdown(item.text)}</li>`;
+				}
+				while (stack.length > 0) {
+					listHtml += `</${stack.pop()!.tag}>`;
+				}
+				out.push(listHtml);
+			} else {
+				// 段落：连续非空、非块级起点行合并为一段
+				const para: string[] = [trimmed];
+				i++;
+				while (i < lines.length) {
+					const t = lines[i].trim();
+					if (t === '' || /^#{1,6}\s+/.test(t) || /^>\s?/.test(t) || /^\s*```/.test(t) || /^(\s*)([-*+]|\d+\.)\s+/.test(t) || /^(-{3,}|\*{3,}|_{3,})\s*$/.test(t)) {
+						break;
+					}
+					para.push(t);
+					i++;
+				}
+				out.push(`<p>${renderInlineMarkdown(para.join(' '))}</p>`);
+			}
+		}
+	}
+	return out.join('\n');
 }
 
 // 状态栏项
@@ -450,11 +678,6 @@ export function activate(context: vscode.ExtensionContext) {
 								color: var(--vscode-textLink-foreground);
 								margin-top: 0;
 							}
-							.solution-tip {
-								color: var(--vscode-descriptionForeground);
-								font-size: 13px;
-								margin-top: 0;
-							}
 							.article-item {
 								padding: 15px;
 								background: var(--vscode-editor-background);
@@ -573,10 +796,25 @@ export function activate(context: vscode.ExtensionContext) {
 								margin-top: 0;
 								border-radius: 0 6px 6px 6px;
 							}
+							.code-tabs-container {
+								margin: 16px 0;
+							}
+							.img-placeholder {
+								color: var(--vscode-descriptionForeground);
+							}
+							table {
+								border-collapse: collapse;
+								margin: 16px 0;
+							}
+							th, td {
+								border: 1px solid var(--vscode-panel-border);
+								padding: 6px 12px;
+							}
+							th {
+								background: var(--vscode-tab-inactiveBackground);
+							}
 						</style>
-						<!-- 加载 marked 库用于 Markdown 渲染 -->
-						<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-						<!-- 加载 KaTeX 用于数学公式渲染 -->
+<!-- 加载 KaTeX 用于数学公式渲染（可选增强，加载失败时公式保留原文） -->
 						<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 						<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 						<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
@@ -623,74 +861,27 @@ export function activate(context: vscode.ExtensionContext) {
 							function openArticle(slug) {
 								vscode.postMessage({ type: 'openArticle', slug: slug });
 							}
-							function processCodeTabs(c){
-							var pres=Array.from(c.querySelectorAll('pre'));
-							if(pres.length<2)return;
-							
-							// 推断代码语言
-							function detectLang(code){
-								var text=code.textContent||'';
-								if(/class\\s+\\w+\\s*\\{/.test(text)&&/public\\s+(static\\s+)?\\w+/.test(text))return'Java';
-								if(/^class Solution/.test(text.trim())&&/def\\s+\\w+\\(self/.test(text))return'Python';
-								if(/vector<|#include|::/.test(text))return'C++';
-								if(/func\\s+\\w+\\(.*\\).*\\{/.test(text))return'Go';
-								if(/fn\\s+\\w+\\(/.test(text)&&/->/.test(text))return'Rust';
-								if(/function\\s+\\w+\\(|const\\s+\\w+\\s*=\\s*function|=>/.test(text))return'JavaScript';
-								if(/struct\\s+\\w+|HASH_/.test(text))return'C';
-								var cls=code.className||'';
-								var m=cls.match(/language-(\\w+)/i);
-								return m?m[1]:'Code';
+function selectLangTab(btn) {
+								var box = btn.closest('.code-tabs-container');
+								var tabs = box.querySelectorAll('.lang-tab');
+								var idx = Array.prototype.indexOf.call(tabs, btn);
+								tabs.forEach(function(t) { t.classList.remove('active'); });
+								box.querySelectorAll('.lang-code-block').forEach(function(b) { b.classList.remove('active'); });
+								btn.classList.add('active');
+								box.querySelectorAll('.lang-code-block')[idx].classList.add('active');
 							}
 							
-							// 收集连续代码块
-							var groups=[],cur=[];
-							for(var i=0;i<pres.length;i++){
-								var pre=pres[i],code=pre.querySelector('code');
-								if(!code)continue;
-								var lang=detectLang(code);
-								cur.push({pre:pre,lang:lang});
-								
-								// 检查下一个是否相邻（允许2个节点间隔）
-								var next=pres[i+1],isAdj=false;
-								if(next){
-									var sib=pre.nextElementSibling;
-									for(var j=0;j<3&&sib;j++){
-										if(sib===next){isAdj=true;break;}
-										sib=sib.nextElementSibling;
-									}
-								}
-								if(!next||!isAdj){
-									if(cur.length>1)groups.push(cur.slice());
-									cur=[];
-								}
-							}
-							if(cur.length>1)groups.push(cur.slice());
-							
-							// 创建标签页
-							groups.forEach(function(gr){
-								var w=document.createElement('div');
-								var t=document.createElement('div');t.className='lang-tabs';
-								var cs=document.createElement('div');
-								gr.forEach(function(item,idx){
-									var tab=document.createElement('button');
-									tab.className='lang-tab'+(idx===0?' active':'');
-									tab.textContent=item.lang;
-									tab.onclick=function(){
-										t.querySelectorAll('.lang-tab').forEach(function(x){x.classList.remove('active');});
-										cs.querySelectorAll('.lang-code-block').forEach(function(x){x.classList.remove('active');});
-										tab.classList.add('active');cs.children[idx].classList.add('active');
-									};
-									t.appendChild(tab);
-									var ct=document.createElement('div');
-									ct.className='lang-code-block'+(idx===0?' active':'');
-									ct.appendChild(item.pre.cloneNode(true));
-									cs.appendChild(ct);
+							// 若 KaTeX 从 CDN 加载成功，则渲染 $$/$ 数学公式；失败时公式保留为原文
+							if (typeof renderMathInElement !== 'undefined') {
+								renderMathInElement(document.body, {
+									delimiters: [
+										{ left: '$$', right: '$$', display: true },
+										{ left: '$', right: '$', display: false }
+									],
+									ignoredTags: ['pre', 'code', 'script', 'textarea'],
+									throwOnError: false
 								});
-								w.appendChild(t);w.appendChild(cs);
-								gr[0].pre.parentNode.insertBefore(w,gr[0].pre);
-								gr.forEach(function(item){item.pre.remove();});
-							});
-						}
+							}
 					</script>
 					</body>
 					</html>
@@ -710,106 +901,53 @@ export function activate(context: vscode.ExtensionContext) {
 							const communityData = await leetCodeApi.getSolutionArticles(q.titleSlug, 0, 10);
 							const communityArticles = communityData?.data?.questionSolutionArticles?.edges || [];
 
-							let solutionHtml = '';
+								let solutionHtml = '';
 
-							// 官方题解 - Markdown内容需要用marked解析
-							if (officialSolution && officialSolution.content && officialSolution.canSeeDetail) {
-								// 清理内容中的 iframe 代码游玩区，避免 webview 中被重定向为登录页
-								const cleanedContent = sanitizeSolutionContent(officialSolution.content);
-								// 将Markdown内容进行JSON编码以安全传递
-								const mdContent = JSON.stringify(cleanedContent);
-								solutionHtml += `
-									<div class="solution-section">
-										<h2>📖 官方题解</h2>
-										<div class="solution-content" id="official-solution-content"></div>
-										<script>
-											(function() {
-												const md = ${mdContent};
-												const el = document.getElementById('official-solution-content');
-												if (typeof marked !== 'undefined') {
-													// 配置marked处理代码块语言标签（如 Javascript []）
-													const renderer = new marked.Renderer();
-													renderer.code = function(code, lang) {
-														// 移除语言后面的 [] 标记
-														const cleanLang = lang ? lang.replace(/\\s*\\[.*\\]$/, '').trim() : '';
-														const langClass = cleanLang ? 'language-' + cleanLang : '';
-														return '<pre><code class="' + langClass + '">' + 
-															(code.text || code).replace(/</g, '&lt;').replace(/>/g, '&gt;') + 
-															'</code></pre>';
-													};
-													marked.setOptions({ renderer: renderer, breaks: true, gfm: true });
-													el.innerHTML = marked.parse(md);
-													
-													// 渲染LaTeX公式 - $$...$$ 作为行内公式
-													if (typeof renderMathInElement !== 'undefined') {
-														renderMathInElement(el, {
-															delimiters: [
-																{left: '$$', right: '$$', display: false},
-																{left: '$', right: '$', display: false}
-															],
-															throwOnError: false
-														});
-													}
-													// 处理多语言代码块
-													if (typeof processCodeTabs === 'function') {
-														processCodeTabs(el);
-													}
-												} else {
-													el.innerHTML = md.replace(/\\n/g, '<br>');
-												}
-											})();
-										</script>
-									</div>
-								`;
-							} else if (officialSolution && !officialSolution.canSeeDetail) {
-								solutionHtml += `
-									<div class="solution-section">
-										<h2>📖 官方题解</h2>
-										<p>🔒 此题解为会员专享内容</p>
-									</div>
-								`;
-							}
+								// 官方题解：question.solution 的 content 只有文字 + playground iframe，
+								// 代码无法从 GraphQL 抓取且 iframe 会被整体移除；真正带代码的官方题解是
+								// byLeetcode 标记的官方文章。优先拉取该文章并静态渲染其中的代码块。
+								const officialArticleEdge = communityArticles.find((e: any) => e.node?.byLeetcode === true);
+								let officialArticleHtml = '';
+								if (officialArticleEdge?.node?.slug) {
+									try {
+										const articleData = await leetCodeApi.getSolutionArticle(officialArticleEdge.node.slug);
+										const article = articleData?.data?.solutionArticle;
+										if (article && article.content) {
+											const cleanedContent = sanitizeSolutionContent(article.content);
+											officialArticleHtml = `
+												<div class="solution-section">
+													<h2>📖 官方题解</h2>
+													<div class="article-meta" style="margin-bottom:12px;">👑 LeetCode 官方 | 👍 ${article.upvoteCount}</div>
+													<div class="solution-content">${renderMarkdownToHtml(cleanedContent, 'preferred')}</div>
+												</div>
+											`;
+										}
+									} catch (e) {
+										// 官方文章拉取失败时静默跳过，回退到 question.solution 的文字内容
+									}
+								}
 
-							// 题目自带代码骨架（用代码块形式展示，替代无法抓取的 playground iframe）
-							if (q.codeSnippets && q.codeSnippets.length > 0) {
-								const preferred = selectPreferredSnippet(q.codeSnippets);
-								const langLabel = preferred && preferred.lang ? preferred.lang : '代码';
-								const langFence = preferred && preferred.langSlug ? preferred.langSlug : '';
-								const codeSnippetMd = preferred
-									? `\`\`\`${langFence}\n${preferred.code}\n\`\`\``
-									: '';
-								const snippetMdContent = JSON.stringify(codeSnippetMd);
-								solutionHtml += `
-									<div class="solution-section">
-										<h2>💻 代码示例（${langLabel}）</h2>
-										<p class="solution-tip">以下是该题的代码模板，可在编辑器里编写解题代码。</p>
-										<div class="solution-content" id="code-snippets-content"></div>
-										<script>
-											(function() {
-												const md = ${snippetMdContent};
-												const el = document.getElementById('code-snippets-content');
-												if (typeof marked !== 'undefined') {
-													const renderer = new marked.Renderer();
-													renderer.code = function(code, lang) {
-														const cleanLang = lang ? lang.replace(/\\s*\\[.*\\]$/, '').trim() : '';
-														const langClass = cleanLang ? 'language-' + cleanLang : '';
-														return '<pre><code class="' + langClass + '">' +
-															(code.text || code).replace(/</g, '&lt;').replace(/>/g, '&gt;') +
-															'</code></pre>';
-													};
-													marked.setOptions({ renderer: renderer, breaks: true, gfm: true });
-													el.innerHTML = marked.parse(md);
-													if (typeof processCodeTabs === 'function') {
-														processCodeTabs(el);
-													}
-												} else {
-													el.innerHTML = md.replace(/\\n/g, '<br>');
-												}
-											})();
-										</script>
-									</div>
-								`;
-							}
+								if (officialArticleHtml) {
+									solutionHtml += officialArticleHtml;
+								} else if (officialSolution && officialSolution.content && officialSolution.canSeeDetail) {
+									// 回退方案：官方文章不可用时，展示 question.solution 的文字题解（静态渲染，不含代码）
+									// 清理内容中的 iframe 代码游玩区，避免 webview 中被重定向为登录页
+									const cleanedContent = sanitizeSolutionContent(officialSolution.content);
+									solutionHtml += `
+										<div class="solution-section">
+											<h2>📖 官方题解</h2>
+											<p style="color:var(--vscode-descriptionForeground);">（文字题解，代码见官方文章）</p>
+											<div class="solution-content">${renderMarkdownToHtml(cleanedContent, 'preferred')}</div>
+										</div>
+									`;
+								} else if (officialSolution && !officialSolution.canSeeDetail) {
+									solutionHtml += `
+										<div class="solution-section">
+											<h2>📖 官方题解</h2>
+											<p>🔒 此题解为会员专享内容</p>
+										</div>
+									`;
+								}
 
 							// 社区题解
 							if (communityArticles.length > 0) {
@@ -833,6 +971,30 @@ export function activate(context: vscode.ExtensionContext) {
 								`;
 							}
 
+// 社区精选（含代码）：取高赞的非官方社区题解全文，完整渲染 Markdown，
+									// 多语言代码块保留全部并生成标签页，与官方题解展示互补、不重复。
+									const pickEdge = communityArticles.find((e: any) => e.node?.byLeetcode !== true);
+									if (pickEdge?.node?.slug) {
+										try {
+											const topArticleData = await leetCodeApi.getSolutionArticle(pickEdge.node.slug);
+											const topArticle = topArticleData?.data?.solutionArticle;
+											if (topArticle && topArticle.content) {
+												const cleanedTop = sanitizeSolutionContent(topArticle.content);
+												const topAuthor = topArticle.author?.profile?.realName || topArticle.author?.username || '匿名';
+												const topArticleHtml = renderMarkdownToHtml(cleanedTop, 'all');
+											solutionHtml += `
+												<div class="solution-section">
+													<h2>⭐ 社区精选题解（含代码）</h2>
+													<div class="article-meta" style="margin-bottom:12px;">👍 ${topArticle.upvoteCount} | 作者: ${topAuthor}</div>
+													<div class="solution-content">${topArticleHtml}</div>
+												</div>
+											`;
+										}
+									} catch (e) {
+										// 拉取精选题解失败时静默跳过，不影响其余内容
+									}
+								}
+
 							if (!solutionHtml) {
 								solutionHtml = '<div class="loading">暂无题解</div>';
 							}
@@ -846,52 +1008,16 @@ export function activate(context: vscode.ExtensionContext) {
 							const articleData = await leetCodeApi.getSolutionArticle(message.slug);
 							const article = articleData?.data?.solutionArticle;
 							if (article) {
-								// 清理内容中的 iframe，避免 webview 中被重定向为登录页
-								const cleanedArticle = sanitizeSolutionContent(article.content || '');
-								// 将Markdown内容进行JSON编码以安全传递
-								const articleMdContent = JSON.stringify(cleanedArticle);
-								const articleHtml = `
-									<div class="solution-section">
-										<button onclick="vscode.postMessage({type:'loadSolution'})" style="background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-bottom:20px;">← 返回列表</button>
-										<h2>${article.title}</h2>
-										<div class="article-meta" style="margin-bottom:20px;">👍 ${article.upvoteCount} | 作者: ${article.author?.profile?.realName || article.author?.username || '匿名'}${article.byLeetcode ? ' | 👑 官方' : ''}</div>
-										<div class="solution-content" id="article-solution-content"></div>
-										<script>
-											(function() {
-												const md = ${articleMdContent};
-												const el = document.getElementById('article-solution-content');
-												if (typeof marked !== 'undefined') {
-													const renderer = new marked.Renderer();
-													renderer.code = function(code, lang) {
-														const cleanLang = lang ? lang.replace(/\\s*\\[.*\\]$/, '').trim() : '';
-														const langClass = cleanLang ? 'language-' + cleanLang : '';
-														return '<pre><code class="' + langClass + '">' + 
-															(code.text || code).replace(/</g, '&lt;').replace(/>/g, '&gt;') + 
-															'</code></pre>';
-													};
-													marked.setOptions({ renderer: renderer, breaks: true, gfm: true });
-													el.innerHTML = marked.parse(md);
-													// 渲染LaTeX公式
-													if (typeof renderMathInElement !== 'undefined') {
-														renderMathInElement(el, {
-															delimiters: [
-																{left: '$$', right: '$$', display: false},
-																{left: '$', right: '$', display: false}
-															],
-															throwOnError: false
-														});
-													}
-													// 处理多语言代码块
-													if (typeof processCodeTabs === 'function') {
-														processCodeTabs(el);
-													}
-												} else {
-													el.innerHTML = md.replace(/\\n/g, '<br>');
-												}
-											})();
-										</script>
-									</div>
-								`;
+// 清理内容中的 iframe，避免 webview 中被重定向为登录页
+									const cleanedArticle = sanitizeSolutionContent(article.content || '');
+									const articleHtml = `
+										<div class="solution-section">
+											<button onclick="vscode.postMessage({type:'loadSolution'})" style="background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-bottom:20px;">← 返回列表</button>
+											<h2>${article.title}</h2>
+											<div class="article-meta" style="margin-bottom:20px;">👍 ${article.upvoteCount} | 作者: ${article.author?.profile?.realName || article.author?.username || '匿名'}${article.byLeetcode ? ' | 👑 官方' : ''}</div>
+											<div class="solution-content">${renderMarkdownToHtml(cleanedArticle, 'all')}</div>
+										</div>
+									`;
 								panel.webview.html = generatePanelHtml('solution', articleHtml);
 							}
 						} catch (error) {
