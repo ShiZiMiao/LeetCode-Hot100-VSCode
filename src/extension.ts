@@ -105,10 +105,10 @@ function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 	let s = escapeHtml(text);
 	s = s.replace(/!\[([^\]]*\.(?:mp4|webm))\]\(([^)\s]+)\)/gi, (m, alt, url) => {
 		if (videoPageUrl) {
-			// 视频在 LeetCode 内部 CDN（需登录态）：点击后由扩展端携带会话 Cookie 缓存，
-			// 成功则内嵌播放，失败自动降级为浏览器播放入口
-			const src = url + (/\.(mp4|webm)$/i.test(url) ? '' : '.mp4');
-			return `<button class="video-link" data-video-url="https://video.leetcode.cn/${src}" data-page-url="${videoPageUrl}" onclick="playArticleVideo(this)">🎬 播放视频题解</button>`;
+			// 视频题解：uuid 为阿里云 VOD 视频标识，点击后由扩展端查询 playAuth 播放凭证，
+			// 再用 Aliplayer 内嵌播放；失败时降级为浏览器播放入口
+			const uuid = url.replace(/\.(mp4|webm)$/i, '');
+			return `<button class="video-link" data-play-uuid="${uuid}" data-page-url="${videoPageUrl}" onclick="playArticleVideo(this)">🎬 播放视频题解</button>`;
 		}
 		return `<span class="img-placeholder">[视频：${alt}]</span>`;
 	});
@@ -378,6 +378,22 @@ function isDarkEditorTheme(): boolean {
 	} catch (e) {
 		return true;
 	}
+}
+
+// Aliplayer（阿里云 VOD 播放器）本地资源，视频题解通过 playAuth 播放，不依赖 CDN
+let aliplayerFiles: { js: string; css: string } | null = null;
+
+function getAliplayerFiles(context: vscode.ExtensionContext): { js: string; css: string } | null {
+	if (aliplayerFiles) {
+		return aliplayerFiles;
+	}
+	const jsPath = path.join(context.extensionPath, 'vendor', 'aliplayer-min.js');
+	const cssPath = path.join(context.extensionPath, 'vendor', 'aliplayer-min.css');
+	if (!fs.existsSync(jsPath) || !fs.existsSync(cssPath)) {
+		return null;
+	}
+	aliplayerFiles = { js: jsPath, css: cssPath };
+	return aliplayerFiles;
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -693,6 +709,11 @@ export function activate(context: vscode.ExtensionContext) {
 
 				// 生成带标签页的面板HTML
 const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
+						const aliplayerFiles = getAliplayerFiles(context);
+						const aliplayerView = aliplayerFiles ? {
+							css: panel.webview.asWebviewUri(vscode.Uri.file(aliplayerFiles.css)).toString(),
+							js: panel.webview.asWebviewUri(vscode.Uri.file(aliplayerFiles.js)).toString()
+						} : null;
 						return `
 						<!DOCTYPE html>
 					<html lang="zh-CN">
@@ -983,6 +1004,8 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+							<!-- 加载 Aliplayer 阿里云播放器（本地 vendor 资源）用于视频题解 -->
+							${aliplayerView ? `<link rel="stylesheet" href="${aliplayerView.css}"><script src="${aliplayerView.js}"></script>` : ''}
 							<!-- 代码语法高亮由扩展端渲染时完成（vendored highlight.js），webview 仅需配色变量 -->
 					</head>
 					<body>
@@ -1037,15 +1060,15 @@ function selectLangTab(btn) {
 								box.querySelectorAll('.lang-code-block')[idx].classList.add('active');
 							}
 							
-							// 视频题解：请求扩展端携带会话 Cookie 缓存视频，成功后内嵌播放；
-							// 缓存失败时降级为浏览器播放入口
+							// 视频题解：请求扩展端查询阿里云 VOD playAuth 播放凭证，成功后用 Aliplayer 内嵌播放；
+							// 失败时降级为浏览器播放入口
 							function playArticleVideo(btn) {
 								btn.setAttribute('data-loading', '1');
-								btn.textContent = '⏳ 正在加载视频…';
+								btn.textContent = '⏳ 正在获取播放信息…';
 								btn.disabled = true;
 								vscode.postMessage({
 									type: 'playVideo',
-									url: btn.getAttribute('data-video-url'),
+									uuid: btn.getAttribute('data-play-uuid'),
 									pageUrl: btn.getAttribute('data-page-url')
 								});
 							}
@@ -1063,16 +1086,28 @@ function selectLangTab(btn) {
 								if (!msg || msg.type !== 'videoReady') return;
 								var btn = document.querySelector('.video-link[data-loading="1"]');
 								if (!btn) return;
-								if (msg.src) {
-									var v = document.createElement('video');
-									v.className = 'article-video';
-									v.controls = true;
-									v.autoplay = true;
-									v.src = msg.src;
-									v.addEventListener('error', function() { btn.replaceWith(makeVideoBrowserFallback(msg.pageUrl)); });
-									btn.replaceWith(v);
-								} else {
+								if (typeof Aliplayer === 'undefined' || msg.error || !msg.videoId || !msg.playAuth) {
 									btn.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
+									return;
+								}
+								var container = document.createElement('div');
+								container.className = 'article-video';
+								container.id = 'lc-aliplayer-' + Date.now();
+								btn.replaceWith(container);
+								try {
+									new Aliplayer({
+										id: container.id,
+										vid: msg.videoId,
+										playauth: msg.playAuth,
+										cover: msg.coverUrl || '',
+										width: '100%',
+										height: '480px',
+										autoplay: true,
+										playsinline: true,
+										preload: true
+									});
+								} catch (e) {
+									container.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
 								}
 							});
 							
@@ -1213,34 +1248,32 @@ function selectLangTab(btn) {
 						}
 					} else if (message.type === 'playVideo') {
 						try {
-							const videoUrl = typeof message.url === 'string' ? message.url : '';
-							if (!/^https:\/\/video\.leetcode\.cn\/[-\w]+\.(mp4|webm)$/i.test(videoUrl)) {
-								throw new Error('无效的视频地址');
+							const uuid = typeof message.uuid === 'string' ? message.uuid.trim() : '';
+							if (!/^[0-9a-fA-F-]{20,40}$/.test(uuid)) {
+								throw new Error('无效的视频标识');
 							}
-							let fileUri: vscode.Uri | null = null;
+							let info: any = null;
 							await vscode.window.withProgress({
 								location: vscode.ProgressLocation.Notification,
-								title: '正在缓存视频题解…',
+								title: '正在获取视频播放信息…',
 								cancellable: false
 							}, async () => {
-								const buffer = await leetCodeApi.downloadBinary(videoUrl);
-								if (buffer.length === 0) {
-									throw new Error('视频为空');
-								}
-								const dirUri = vscode.Uri.joinPath(context.globalStorageUri, 'video');
-								await vscode.workspace.fs.createDirectory(dirUri);
-								fileUri = vscode.Uri.joinPath(dirUri, path.basename(new URL(videoUrl).pathname));
-								await vscode.workspace.fs.writeFile(fileUri, new Uint8Array(buffer));
+								const data = await leetCodeApi.getVideoInfo(uuid);
+								info = data?.data?.videosVideoInfo;
 							});
+							if (!info?.playAuth || !info?.videoInfo?.videoId) {
+								throw new Error('未获取到播放凭证');
+							}
 							panel.webview.postMessage({
 								type: 'videoReady',
-								src: fileUri ? panel.webview.asWebviewUri(fileUri).toString() : null,
+								videoId: info.videoInfo.videoId,
+								playAuth: info.playAuth,
+								coverUrl: info.videoInfo.coverUrl || '',
 								pageUrl: message.pageUrl
 							});
 						} catch (error) {
-							// 视频加载失败（如未登录）时降级为浏览器播放入口，并提示原因
-							vscode.window.showWarningMessage('视频题解缓存失败：登录状态可能已失效或被 CDN 拦截，请重新登录后再试');
-							panel.webview.postMessage({ type: 'videoReady', src: null, pageUrl: message.pageUrl });
+							vscode.window.showWarningMessage(`视频题解加载失败：${error instanceof Error ? error.message : '未知错误'}`);
+							panel.webview.postMessage({ type: 'videoReady', error: true, pageUrl: message.pageUrl });
 						}
 					} else if (message.type === 'openExternal' && typeof message.url === 'string' && message.url.startsWith('https://leetcode.cn/')) {
 							// 视频题解等无法在 webview 内播放的内容，交给系统默认浏览器打开

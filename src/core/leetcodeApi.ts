@@ -92,48 +92,30 @@ export class LeetCodeApi {
     }
 
     /**
-     * 下载二进制资源（视频题解等），携带会话 Cookie 通过防盗链校验。
-     * 视频 CDN（video.leetcode.cn）要求登录态，webview 跨域请求不带 Cookie，
-     * 只能由扩展端下载后写入本地文件，再通过 asWebviewUri 交给 webview 播放。
+     * 获取题解视频的播放信息（阿里云 VOD：playAuth 凭证 + videoId + 封面）。
+     * 题解 Markdown 中的 ![xxx.mp4](uuid) 即 uuid 参数；前端网页用
+     * Aliplayer（vid + playauth）播放，普通 <video> 直链不可用（video.leetcode.cn 已废弃且 403）。
      */
-    async downloadBinary(url: string): Promise<Buffer> {
-        const u = new URL(url);
-        const headers = await this.getHeaders();
-        // 视频 CDN（Tengine）对 UA 有白名单，使用常见 Chrome UA，去掉扩展标识
-        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-        headers['Accept'] = '*/*';
-        headers['Referer'] = `https://${LeetCodeApi.HOSTNAME}/`;
-        headers['Origin'] = `https://${LeetCodeApi.HOSTNAME}`;
-        return new Promise((resolve, reject) => {
-            const req = https.request(
-                {
-                    hostname: u.hostname,
-                    port: 443,
-                    path: u.pathname,
-                    method: 'GET',
-                    headers: headers,
-                    rejectUnauthorized: false
-                },
-                (res) => {
-                    if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                        const location = res.headers.location;
-                        const next = location.startsWith('http') ? location : new URL(location, url).toString();
-                        req.destroy();
-                        resolve(this.downloadBinary(next));
-                        return;
+    async getVideoInfo(uuid: string): Promise<any> {
+        const query = `
+            query videoInfo($uuid: UUID!) {
+                videosVideoInfo(uuid: $uuid, fetchType: PLAY_AUTH) {
+                    playAuth
+                    status
+                    videoInfo {
+                        videoId
+                        coverUrl
                     }
-                    if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-                        const chunks: Buffer[] = [];
-                        res.on('data', (chunk) => chunks.push(chunk));
-                        res.on('end', () => resolve(Buffer.concat(chunks)));
-                    } else {
-                        reject(new Error(`download failed with status ${res.statusCode}`));
+                    videoSize {
+                        width
+                        height
                     }
+                    articleChargeType
+                    canSee
                 }
-            );
-            req.on('error', reject);
-            req.end();
-        });
+            }
+        `;
+        return this.postGraphql(query, { uuid });
     }
 
     async getUserProfile(): Promise<any> {
