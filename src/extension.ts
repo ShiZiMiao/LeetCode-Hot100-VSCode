@@ -109,10 +109,18 @@ function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 	return `<pre><code class="${cls}">${escapeHtml(block.code)}</code></pre>`;
 }
 
-/** 多语言代码块 → 语言标签页（社区题解保留全部语言时使用） */
-function renderCodeTabsHtml(blocks: MarkdownCodeBlock[]): string {
-	const tabs = blocks.map((b, idx) => `<button class="lang-tab${idx === 0 ? ' active' : ''}" onclick="selectLangTab(this)">${escapeHtml(b.lang || 'Code')}</button>`).join('');
-	const contents = blocks.map((b, idx) => `<div class="lang-code-block${idx === 0 ? ' active' : ''}">${renderCodeBlockHtml(b)}</div>`).join('');
+/**
+ * 多语言代码块 → 语言标签页（保留全部语言，点击切换，类似网页版题解）。
+ * preferredFirst 为 true 时，优先语言（Python3/Python → C/C++ → 其他）排到首位并默认选中。
+ */
+function renderCodeTabsHtml(blocks: MarkdownCodeBlock[], preferredFirst: boolean = false): string {
+	let ordered = blocks;
+	if (preferredFirst && blocks.length > 1) {
+		const preferred = pickPreferredCodeBlock(blocks)!;
+		ordered = [preferred, ...blocks.filter(b => b !== preferred)];
+	}
+	const tabs = ordered.map((b, idx) => `<button class="lang-tab${idx === 0 ? ' active' : ''}" onclick="selectLangTab(this)">${escapeHtml(b.lang || 'Code')}</button>`).join('');
+	const contents = ordered.map((b, idx) => `<div class="lang-code-block${idx === 0 ? ' active' : ''}">${renderCodeBlockHtml(b)}</div>`).join('');
 	return `<div class="code-tabs-container"><div class="lang-tabs">${tabs}</div>${contents}</div>`;
 }
 
@@ -134,11 +142,11 @@ function pickPreferredCodeBlock(blocks: MarkdownCodeBlock[]): MarkdownCodeBlock 
  * 轻量级 Markdown → HTML 渲染器（扩展端静态渲染，不依赖 webview 的 CDN marked）。
  * 支持标题、段落、行内格式、图片/链接、列表、引用、分隔线、表格与围栏代码块。
  * codeMode:
- *   - 'preferred'：相邻的多语言代码块只保留一种（Python3/Python → C/C++ → 其他首个），
- *     用于官方题解，避免同一解法刷屏多份语言代码；
- *   - 'all'：保留全部代码块并按语言生成标签页，用于社区题解。
+ *   - 'preferred'：相邻的多语言代码块只保留一种（Python3/Python → C/C++ → 其他首个）；
+ *   - 'all'：保留全部代码块并按语言生成标签页（preferredFirst 时优先语言排首位并默认选中，
+ *     用于官方题解，接近网页版的多语言切换体验；社区题解保持原文顺序）。
  */
-function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'preferred'): string {
+function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'preferred', preferredFirst: boolean = false): string {
 	if (!md) {
 		return '';
 	}
@@ -194,7 +202,7 @@ function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'prefe
 					out.push(renderCodeBlockHtml(picked));
 				}
 			} else {
-				out.push(blocks.length > 1 ? renderCodeTabsHtml(blocks) : renderCodeBlockHtml(blocks[0]));
+				out.push(blocks.length > 1 ? renderCodeTabsHtml(blocks, preferredFirst) : renderCodeBlockHtml(blocks[0]));
 			}
 			continue;
 		}
@@ -799,6 +807,10 @@ export function activate(context: vscode.ExtensionContext) {
 							.code-tabs-container {
 								margin: 16px 0;
 							}
+							.hljs {
+								background: transparent;
+								padding: 0;
+							}
 							.img-placeholder {
 								color: var(--vscode-descriptionForeground);
 							}
@@ -815,9 +827,12 @@ export function activate(context: vscode.ExtensionContext) {
 							}
 						</style>
 <!-- 加载 KaTeX 用于数学公式渲染（可选增强，加载失败时公式保留原文） -->
-						<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-						<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-						<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+							<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+							<!-- 加载 highlight.js 用于代码语法高亮（可选增强，失败时代码保持纯文本） -->
+							<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css">
+							<script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/common.min.js"></script>
 					</head>
 					<body>
 						<div class="tabs">
@@ -882,6 +897,24 @@ function selectLangTab(btn) {
 									throwOnError: false
 								});
 							}
+							
+							// 若 highlight.js 从 CDN 加载成功，则给题解代码块加语法高亮；失败时代码保持纯文本
+							if (typeof hljs !== 'undefined') {
+								var langMap = {
+									python3: 'python', python: 'python', py: 'python',
+									golang: 'go', go: 'go',
+									'c++': 'cpp', cpp: 'cpp', c: 'c',
+									java: 'java', javascript: 'javascript', js: 'javascript',
+									rust: 'rust', typescript: 'typescript'
+								};
+								document.querySelectorAll('.solution-content pre code').forEach(function(el) {
+									var m = (el.className || '').match(/language-(\S+)/);
+									var lang = m ? langMap[m[1].toLowerCase()] : null;
+									if (lang && hljs.getLanguage(lang)) {
+										el.innerHTML = hljs.highlight(el.textContent, { language: lang }).value;
+									}
+								});
+							}
 					</script>
 					</body>
 					</html>
@@ -917,8 +950,8 @@ function selectLangTab(btn) {
 											officialArticleHtml = `
 												<div class="solution-section">
 													<h2>📖 官方题解</h2>
-													<div class="article-meta" style="margin-bottom:12px;">👑 LeetCode 官方 | 👍 ${article.upvoteCount}</div>
-													<div class="solution-content">${renderMarkdownToHtml(cleanedContent, 'preferred')}</div>
+<div class="article-meta" style="margin-bottom:12px;">👑 LeetCode 官方 | 👍 ${article.upvoteCount}</div>
+														<div class="solution-content">${renderMarkdownToHtml(cleanedContent, 'all', true)}</div>
 												</div>
 											`;
 										}
