@@ -388,14 +388,24 @@ function getFfmpegCore(context: vscode.ExtensionContext): Promise<any> {
 		const corePath = path.join(context.extensionPath, 'vendor', 'ffmpeg', 'ffmpeg-core.js');
 		ffmpegCorePromise = (async () => {
 			// Node >= 22.12 支持 require(ESM)，失败时退回动态 import
+			let factory: any = null;
 			try {
 				const mod = require(corePath);
-				return mod.default || mod;
+				factory = mod.default || mod;
 			} catch (e) {
 				const dynamicImport = new Function('url', 'return import(url)') as (u: string) => Promise<any>;
 				const mod = await dynamicImport('file:///' + corePath.replace(/\\/g, '/'));
-				return mod.default;
+				factory = mod.default;
 			}
+			if (typeof factory !== 'function') {
+				throw new Error('ffmpeg 核心加载失败');
+			}
+			// 实例化 emscripten 核心（返回含 FS/exec 的模块）
+			return await factory({
+				locateFile: (f: string) => path.join(context.extensionPath, 'vendor', 'ffmpeg', f),
+				print: () => {},
+				printErr: (m: string) => console.error('[ffmpeg]', m)
+			});
 		})();
 	}
 	return ffmpegCorePromise;
