@@ -1234,13 +1234,10 @@ const vscode = acquireVsCodeApi();
 											document.documentElement.style.setProperty('--lc-comment', vars.comment);
 											document.documentElement.style.setProperty('--lc-title', vars.title);
 											document.documentElement.style.setProperty('--lc-number', vars.number);
-											document.documentElement.style.setProperty('--lc-built', vars.built);
-											document.body.setAttribute('data-lc-theme', dark ? 'dark' : 'light');
-											try {
-												vscode.postMessage({ type: 'videoDebug', info: 'theme:' + (dark ? 'dark' : 'light') + ' bg:' + c + ' lum:' + (m ? (0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2])).toFixed(1) : 'N/A') + ' kind:' + (document.body.getAttribute('data-vscode-theme-kind') || 'none') });
-											} catch (e) {}
-										}
-										applyLcTheme();
+document.documentElement.style.setProperty('--lc-built', vars.built);
+												document.body.setAttribute('data-lc-theme', dark ? 'dark' : 'light');
+											}
+											applyLcTheme();
 										setTimeout(function() { applyLcTheme(); }, 500);
 										setTimeout(function() { applyLcTheme(); }, 2500);
 										var lastVal = '';
