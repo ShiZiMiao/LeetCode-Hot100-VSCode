@@ -1196,37 +1196,51 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 const vscode = acquireVsCodeApi();
 									let solutionLoaded = false;
 									
-									// 代码主题判定：读取 --vscode-editor-background 的实际计算值（跟随编辑器主题），
-									// 用探针元素保证非透明；不依赖 prefers-color-scheme（webview 跟随的是操作系统）
+									// 代码主题判定：直接读代码块 pre 的准确背景（--vscode-textPreformat-background 已生效），
+									// 并把明/暗色板变量直接写入 :root 内联样式——不依赖选择器、属性或探针
 									(function() {
-										function getProbe() {
-											var probe = document.getElementById('lc-theme-probe');
-											if (!probe) {
-												probe = document.createElement('div');
-												probe.id = 'lc-theme-probe';
-												probe.style.cssText = 'position:absolute;width:2px;height:2px;top:-10px;left:-10px;background:var(--vscode-editor-background,#ffffff);';
-												document.body.appendChild(probe);
+										var LC_VARS = {
+											light: { base: '#24292e', keyword: '#d73a49', string: '#032f62', comment: '#6a737d', title: '#6f42c1', number: '#005cc5', built: '#e36209' },
+											dark: { base: '#e6edf3', keyword: '#ff7b72', string: '#a5d6ff', comment: '#8b949e', title: '#d2a8ff', number: '#79c0ff', built: '#ffa657' }
+										};
+										function readBg() {
+											var pre = document.querySelector('.solution-content pre, .problem-content pre');
+											if (pre) {
+												var c = getComputedStyle(pre).backgroundColor;
+												if (c && c !== 'transparent' && c.indexOf('rgba(0, 0, 0, 0)') !== 0) { return c; }
 											}
-											return probe;
+											var sec = document.querySelector('.solution-section');
+											if (sec) {
+												var s = getComputedStyle(sec).backgroundColor;
+												if (s && s !== 'transparent') { return s; }
+											}
+											return '';
 										}
 										function applyLcTheme() {
-											var c = getComputedStyle(getProbe()).backgroundColor;
+											var c = readBg();
 											var m = c.match(/\d+/g);
 											var dark = false;
 											if (m) {
 												var lum = 0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2]);
 												dark = lum < 160;
 											}
+											var vars = dark ? LC_VARS.dark : LC_VARS.light;
+											document.documentElement.style.setProperty('--lc-base', vars.base);
+											document.documentElement.style.setProperty('--lc-keyword', vars.keyword);
+											document.documentElement.style.setProperty('--lc-string', vars.string);
+											document.documentElement.style.setProperty('--lc-comment', vars.comment);
+											document.documentElement.style.setProperty('--lc-title', vars.title);
+											document.documentElement.style.setProperty('--lc-number', vars.number);
+											document.documentElement.style.setProperty('--lc-built', vars.built);
 											document.body.setAttribute('data-lc-theme', dark ? 'dark' : 'light');
-											// 诊断：上报探测结果（面板可见弹窗），便于定位主题判定问题
 											try {
-												vscode.postMessage({ type: 'videoDebug', info: 'theme:' + (dark ? 'dark' : 'light') + ' bg:' + c + ' attr:' + document.body.getAttribute('data-lc-theme') });
+												vscode.postMessage({ type: 'videoDebug', info: 'theme:' + (dark ? 'dark' : 'light') + ' bg:' + c + ' lum:' + (m ? (0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2])).toFixed(1) : 'N/A') });
 											} catch (e) {}
 										}
 										applyLcTheme();
 										var lastVal = '';
 										setInterval(function() {
-											var v = getComputedStyle(getProbe()).backgroundColor;
+											var v = readBg();
 											if (v !== lastVal) {
 												lastVal = v;
 												applyLcTheme();
