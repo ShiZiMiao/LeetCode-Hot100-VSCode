@@ -380,10 +380,10 @@ function isDarkEditorTheme(): boolean {
 	}
 }
 
-// 视频播放资源（阿里云 Aliplayer + hls.js），本地 vendor，不依赖 CDN
-let playerFiles: { apiJs: string; apiCss: string; hlsJs: string } | null = null;
+// 视频播放资源（阿里云 Aliplayer + hls.js + ffmpeg.wasm），本地 vendor，不依赖 CDN
+let playerFiles: { apiJs: string; apiCss: string; hlsJs: string; ffmpegJs: string; utilJs: string; ffmpegCoreJs: string; ffmpegCoreWasm: string } | null = null;
 
-function getPlayerFiles(context: vscode.ExtensionContext): { apiJs: string; apiCss: string; hlsJs: string } | null {
+function getPlayerFiles(context: vscode.ExtensionContext): { apiJs: string; apiCss: string; hlsJs: string; ffmpegJs: string; utilJs: string; ffmpegCoreJs: string; ffmpegCoreWasm: string } | null {
 	if (playerFiles) {
 		return playerFiles;
 	}
@@ -391,10 +391,14 @@ function getPlayerFiles(context: vscode.ExtensionContext): { apiJs: string; apiC
 	const apiJs = path.join(base, 'aliplayer-min.js');
 	const apiCss = path.join(base, 'aliplayer-min.css');
 	const hlsJs = path.join(base, 'hls.min.js');
-	if (!fs.existsSync(apiJs) || !fs.existsSync(apiCss) || !fs.existsSync(hlsJs)) {
+	const ffmpegJs = path.join(base, 'ffmpeg', 'ffmpeg.js');
+	const utilJs = path.join(base, 'ffmpeg', 'util.js');
+	const ffmpegCoreJs = path.join(base, 'ffmpeg', 'ffmpeg-core.js');
+	const ffmpegCoreWasm = path.join(base, 'ffmpeg', 'ffmpeg-core.wasm');
+	if (!fs.existsSync(apiJs) || !fs.existsSync(apiCss) || !fs.existsSync(hlsJs) || !fs.existsSync(ffmpegJs) || !fs.existsSync(utilJs) || !fs.existsSync(ffmpegCoreJs) || !fs.existsSync(ffmpegCoreWasm)) {
 		return null;
 	}
-	playerFiles = { apiJs, apiCss, hlsJs };
+	playerFiles = { apiJs, apiCss, hlsJs, ffmpegJs, utilJs, ffmpegCoreJs, ffmpegCoreWasm };
 	return playerFiles;
 }
 
@@ -715,13 +719,21 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 						const playerView = playerFiles ? {
 							css: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.apiCss)).toString(),
 							apiJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.apiJs)).toString(),
-							hlsJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.hlsJs)).toString()
+							hlsJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.hlsJs)).toString(),
+							ffmpegJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.ffmpegJs)).toString(),
+							utilJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.utilJs)).toString(),
+							ffmpegCoreJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.ffmpegCoreJs)).toString(),
+							ffmpegCoreWasm: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.ffmpegCoreWasm)).toString()
 						} : null;
 						const playerAssetsJson = JSON.stringify(playerView ? {
 							apiJs: playerView.apiJs,
 							apiCss: playerView.css,
-							hlsJs: playerView.hlsJs
-						} : { apiJs: '', apiCss: '', hlsJs: '' });
+							hlsJs: playerView.hlsJs,
+							ffmpegJs: playerView.ffmpegJs,
+							utilJs: playerView.utilJs,
+							ffmpegCoreJs: playerView.ffmpegCoreJs,
+							ffmpegCoreWasm: playerView.ffmpegCoreWasm
+						} : { apiJs: '', apiCss: '', hlsJs: '', ffmpegJs: '', utilJs: '', ffmpegCoreJs: '', ffmpegCoreWasm: '' });
 						return `
 						<!DOCTYPE html>
 					<html lang="zh-CN">
@@ -1104,6 +1116,17 @@ function selectLangTab(btn) {
 								s.onerror = function() { cb(false); };
 								document.head.appendChild(s);
 							}
+							function loadScripts(list, cb) {
+								var i = 0;
+								(function next() {
+									if (i >= list.length) { cb(true); return; }
+									var s = document.createElement('script');
+									s.src = list[i++];
+									s.onload = next;
+									s.onerror = function() { cb(false); };
+									document.head.appendChild(s);
+								})();
+							}
 							function ensurePlayer(kind, cb) {
 								if (kind === 'hls' && typeof Hls !== 'undefined') { cb(true); return; }
 								if (kind === 'aliplayer' && typeof Aliplayer !== 'undefined') { cb(true); return; }
@@ -1118,6 +1141,32 @@ function selectLangTab(btn) {
 								document.head.appendChild(l);
 							}
 							
+							// ffmpeg.wasm：把扩展端合并的 TS 重封装为 MP4（-c copy，不转码），原生 <video> 播放
+							var ffmpegInstance = null;
+							function ensureFfmpeg(cb) {
+								if (ffmpegInstance) { cb(true); return; }
+								if (typeof FFmpeg === 'undefined' || typeof toBlobURL === 'undefined') { cb(false); return; }
+								try {
+									ffmpegInstance = new FFmpeg();
+									Promise.all([
+										toBlobURL(LEETCODE_PLAYER_ASSETS.ffmpegCoreJs, 'text/javascript'),
+										toBlobURL(LEETCODE_PLAYER_ASSETS.ffmpegCoreWasm, 'application/wasm')
+									]).then(function(urls) {
+										return ffmpegInstance.load({ coreURL: urls[0], wasmURL: urls[1] });
+									}).then(function() {
+										cb(true);
+									}).catch(function(e) {
+										ffmpegInstance = null;
+										debug('ffmpeg.load.' + e);
+										cb(false);
+									});
+								} catch (e) {
+									ffmpegInstance = null;
+									debug('ffmpeg.new.' + e);
+									cb(false);
+								}
+							}
+
 							function attachAliplayer(container, msg) {
 								ensureAliplayerCss();
 								ensurePlayer('aliplayer', function(ok) {
@@ -1161,7 +1210,33 @@ function selectLangTab(btn) {
 								v.poster = msg.coverUrl || '';
 								container.appendChild(v);
 								var isHls = (msg.videoUrl || '').indexOf('.m3u8') !== -1;
+								var isMergedTs = (msg.videoUrl || '').indexOf('.ts') !== -1;
 								var fallbackOnFail = function() { attachAliplayer(container, msg); };
+								if (isMergedTs) {
+									// 合并 TS 先尝试 ffmpeg.wasm remux 为 MP4 再原生播放（webview 不支持 TS 容器）
+									v.addEventListener('error', fallbackOnFail);
+									loadScripts([LEETCODE_PLAYER_ASSETS.ffmpegJs, LEETCODE_PLAYER_ASSETS.utilJs], function(ok) {
+										if (!ok) { debug('ffmpeg.scripts.fail'); fallbackOnFail(); return; }
+										ensureFfmpeg(function(fok) {
+											if (!fok) { fallbackOnFail(); return; }
+											fetch(msg.videoUrl)
+												.then(function(r) { if (!r.ok) throw new Error('fetch.' + r.status); return r.arrayBuffer(); })
+												.then(function(data) { return ffmpegInstance.writeFile('in.ts', new Uint8Array(data)); })
+												.then(function() { return ffmpegInstance.exec(['-i', 'in.ts', '-c', 'copy', 'out.mp4']); })
+												.then(function(rc) {
+													return ffmpegInstance.readFile('out.mp4').then(function(out) {
+														debug('ffmpeg.ok.rc=' + rc + '.bytes=' + out.byteLength);
+														var blob = new Blob([out], { type: 'video/mp4' });
+														v.src = URL.createObjectURL(blob);
+														v.play().catch(function() {});
+														return out;
+													});
+												})
+												.catch(function(e) { debug('ffmpeg.err.' + e); fallbackOnFail(); });
+										});
+									});
+									return;
+								}
 								if (isHls) {
 									ensurePlayer('hls', function(ok) {
 										if (!ok || typeof Hls === 'undefined' || !Hls.isSupported()) {
