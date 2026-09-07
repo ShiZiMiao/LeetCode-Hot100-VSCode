@@ -185,7 +185,7 @@ function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 			// 单个代码块高亮失败时回退为纯文本，不影响显示
 		}
 	}
-	// 主题配色由 CSS 变量按 webview 端 data-lc-theme 自动切换，渲染侧不固化任何主题类
+	// 主题配色由 CSS @media (prefers-color-scheme) 自动跟随 VS Code 主题，渲染侧不固化任何主题类
 	return `<pre class="lc-pre"><button class="lc-copy" title="复制代码" onclick="copyCode(this)">⧉</button><code class="${cls}">${inner}</code></pre>`;
 }
 
@@ -1056,7 +1056,7 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							.code-tabs-container {
 								margin: 16px 0;
 							}
-							/* 代码语法高亮配色（GitHub 明/暗双色板，由 webview 按实际背景亮度在 data-lc-theme 上切换） */
+							/* 代码语法高亮配色：默认 GitHub Light（:root 变量），深色由 @media prefers-color-scheme 覆盖 */
 							.solution-content pre code {
 								color: var(--lc-base, #24292e);
 							}
@@ -1087,7 +1087,8 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 								--lc-number: #005cc5;
 								--lc-built: #e36209;
 							}
-							body[data-lc-theme="dark"] {
+							@media (prefers-color-scheme: dark) {
+								:root {
 								--lc-base: #e6edf3;
 								--lc-keyword: #ff7b72;
 								--lc-string: #a5d6ff;
@@ -1095,6 +1096,7 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 								--lc-title: #d2a8ff;
 								--lc-number: #79c0ff;
 								--lc-built: #ffa657;
+								}
 							}
 							/* 兜底：任何主题下 token 背景一律透明 */
 							.solution-content pre code span,
@@ -1195,55 +1197,8 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 const vscode = acquireVsCodeApi();
 								let solutionLoaded = false;
 								
-								// 代码配色主题：以 webview 实际可见背景为唯一判定源，实时跟随主题切换
-								(function() {
-									var lastBg = '';
-									// 依次取 body → 内容容器 → 区块背景，跳过透明值；全透明按浅色处理
-									function readBg() {
-										var els = [document.body, document.querySelector('.content-wrapper'), document.querySelector('.solution-section'), document.querySelector('.tabs')];
-										for (var i = 0; i < els.length; i++) {
-											if (!els[i]) { continue; }
-											var c = getComputedStyle(els[i]).backgroundColor;
-											if (c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)' && c !== 'rgba(255, 255, 255, 0)') {
-												return c;
-											}
-										}
-										return '';
-									}
-									function applyLcTheme() {
-										var c = readBg();
-										var m = c.match(/\d+/g);
-										var dark = false;
-										if (m) {
-											var lum = 0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2]);
-											dark = lum < 160;
-										}
-										if (!m) {
-											// 背景不可读时，回退到 prefers-color-scheme（webview 跟随 VS Code 主题）
-											try {
-												dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-											} catch (e) {}
-										}
-										document.body.setAttribute('data-lc-theme', dark ? 'dark' : 'light');
-										lastBg = c;
-									}
-									applyLcTheme();
-									try {
-										var mq = window.matchMedia('(prefers-color-scheme: dark)');
-										if (mq.addEventListener) {
-											mq.addEventListener('change', applyLcTheme);
-										} else if (mq.addListener) {
-											mq.addListener(applyLcTheme);
-										}
-									} catch (e) {}
-									// 兜底：背景变化即重判（覆盖主题切换事件缺失的场景）
-									setInterval(function() {
-										var bg = readBg();
-										if (bg !== lastBg) {
-											applyLcTheme();
-										}
-									}, 1500);
-								})();
+								// 代码配色由 CSS @media (prefers-color-scheme) 自动跟随 VS Code 主题，无需 JS 判定
+
 							
 							function switchTab(tab) {
 								document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
