@@ -3,6 +3,8 @@ import { AuthManager } from './authManager';
 import * as https from 'https';
 import * as crypto from 'crypto';
 
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
 export interface Question {
     frontendQuestionId: string;
     title: string;
@@ -117,6 +119,107 @@ export class LeetCodeApi {
             }
         `;
         return this.postGraphql(query, { uuid });
+    }
+
+    /**
+     * 下载并合并视频的 HLS 分段为连续 TS 文件（webview 的 MSE 在部分环境不可用，
+     * 原生 <video> 可直接播放连续 TS）。返回 Buffer，由调用方缓存到磁盘。
+     */
+    async getVideoMergedTs(uuid: string): Promise<{ buffer: Buffer; videoId: string; coverUrl: string; playAuth: string }> {
+        const play = await this.getVideoPlayUrl(uuid);
+        if (!/\.m3u8(\?|$)/i.test(play.videoUrl)) {
+            // 非 HLS 直接返回（mp4 等原生可播）
+            return { buffer: await this.downloadBinaryRaw(play.videoUrl), videoId: play.videoId, coverUrl: play.coverUrl, playAuth: play.playAuth };
+        }
+        const m3u8 = await this.getFullText(play.videoUrl);
+        const segUrls = m3u8.split('\n')
+            .map(l => l.trim())
+            .filter(l => l && !l.startsWith('#'))
+            .map(l => new URL(l, play.videoUrl).toString());
+        if (segUrls.length === 0) {
+            throw new Error('HLS 清单为空');
+        }
+        // 顺序下载并合并（分段较小，避免并发打爆连接）
+        const chunks: Buffer[] = [];
+        const concurrency = 4;
+        let idx = 0;
+        const api = this;
+        async function worker(): Promise<void> {
+            while (idx < segUrls.length) {
+                const cur = idx++;
+                chunks[cur] = await api.downloadBinaryRaw(segUrls[cur]);
+            }
+        }
+        await Promise.all(Array.from({ length: Math.min(concurrency, segUrls.length) }, () => worker()));
+        const total = chunks.reduce((s, c) => s + c.length, 0);
+        if (total === 0) {
+            throw new Error('视频分段下载为空');
+        }
+        return { buffer: Buffer.concat(chunks, total), videoId: play.videoId, coverUrl: play.coverUrl, playAuth: play.playAuth };
+    }
+
+    /** 获取完整 URL 的文本内容（m3u8 清单等非 JSON 响应） */
+    async getFullText(url: string): Promise<string> {
+        const u = new URL(url);
+        return new Promise((resolve, reject) => {
+            const req = https.request(
+                {
+                    hostname: u.hostname,
+                    port: 443,
+                    path: u.pathname + u.search,
+                    method: 'GET',
+                    headers: { 'User-Agent': BROWSER_UA, 'Accept': '*/*' },
+                    rejectUnauthorized: false
+                },
+                (res) => {
+                    let body = '';
+                    res.on('data', (chunk) => body += chunk);
+                    res.on('end', () => {
+                        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                            resolve(body);
+                        } else {
+                            reject(new Error(`请求失败 status ${res.statusCode}`));
+                        }
+                    });
+                }
+            );
+            req.on('error', reject);
+            req.end();
+        });
+    }
+
+    /** 下载完整 URL 的二进制内容（HLS 分段等） */
+    async downloadBinaryRaw(url: string): Promise<Buffer> {
+        const u = new URL(url);
+        return new Promise((resolve, reject) => {
+            const req = https.request(
+                {
+                    hostname: u.hostname,
+                    port: 443,
+                    path: u.pathname + u.search,
+                    method: 'GET',
+                    headers: { 'User-Agent': BROWSER_UA, 'Accept': '*/*' },
+                    rejectUnauthorized: false
+                },
+                (res) => {
+                    if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                        const next = res.headers.location.startsWith('http') ? res.headers.location : new URL(res.headers.location, url).toString();
+                        req.destroy();
+                        resolve(this.downloadBinaryRaw(next));
+                        return;
+                    }
+                    if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                        const chunks: Buffer[] = [];
+                        res.on('data', (chunk) => chunks.push(chunk));
+                        res.on('end', () => resolve(Buffer.concat(chunks)));
+                    } else {
+                        reject(new Error(`下载失败 status ${res.statusCode}`));
+                    }
+                }
+            );
+            req.on('error', reject);
+            req.end();
+        });
     }
 
     /**

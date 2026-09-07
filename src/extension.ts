@@ -696,7 +696,7 @@ export function activate(context: vscode.ExtensionContext) {
 					'leetcodeProblem',
 					`${q.questionFrontendId}. ${q.translatedTitle || q.title}`,
 					vscode.ViewColumn.Two,
-					{ enableScripts: true }
+					{ enableScripts: true, localResourceRoots: [vscode.Uri.file(context.extensionPath), context.globalStorageUri] }
 				);
 
 				// 使用中文内容（translatedContent），如果没有则使用英文
@@ -1356,14 +1356,42 @@ function selectLangTab(btn) {
 							if (!/^[0-9a-fA-F-]{20,40}$/.test(uuid)) {
 								throw new Error('无效的视频标识');
 							}
-							let play: { videoUrl: string; videoId: string; coverUrl: string; playAuth: string };
-							play = await vscode.window.withProgress({
+const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string; playAuth: string } | null } = { value: null };
+							await vscode.window.withProgress({
 								location: vscode.ProgressLocation.Notification,
-								title: '正在获取视频播放地址…',
+								title: '正在下载视频题解…（首次约 30MB，会缓存）',
 								cancellable: false
 							}, async () => {
-								return await leetCodeApi.getVideoPlayUrl(uuid);
+								// 元数据用于 fallback 与缓存文件名
+								const infoData = await leetCodeApi.getVideoInfo(uuid);
+								const meta = infoData?.data?.videosVideoInfo;
+								if (!meta?.videoInfo?.videoId || !meta?.playAuth) {
+									throw new Error('未获取到播放凭证');
+								}
+								const dirUri = vscode.Uri.joinPath(context.globalStorageUri, 'video');
+								await vscode.workspace.fs.createDirectory(dirUri);
+								const cacheUri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '.ts');
+								let stat: vscode.FileStat | null = null;
+								try {
+									stat = await vscode.workspace.fs.stat(cacheUri);
+								} catch (e) {
+									stat = null;
+								}
+								if (!stat || stat.size === 0) {
+									const merged = await leetCodeApi.getVideoMergedTs(uuid);
+									await vscode.workspace.fs.writeFile(cacheUri, new Uint8Array(merged.buffer));
+								}
+								playHolder.value = {
+									videoUrl: panel.webview.asWebviewUri(cacheUri).toString(),
+									videoId: meta.videoInfo.videoId,
+									coverUrl: meta.videoInfo.coverUrl || '',
+									playAuth: meta.playAuth
+								};
 							});
+							const play = playHolder.value;
+							if (!play) {
+								throw new Error('获取视频失败');
+							}
 							panel.webview.postMessage({
 								type: 'videoReady',
 								videoUrl: play.videoUrl,
