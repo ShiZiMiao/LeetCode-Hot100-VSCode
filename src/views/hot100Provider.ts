@@ -74,7 +74,13 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
             // 构建状态映射
             for (const q of allQuestions) {
                 if (HOT_100_IDS.has(q.frontendQuestionId)) {
-                    this.questionStatusMap.set(q.frontendQuestionId, q.status);
+                    // leetcode.cn 列表接口的状态是大写枚举（AC/TRIED/NOT_STARTED），
+                    // 与 question 详情接口的小写 status（ac/notac/null）不同，统一归一化
+                    const raw = q.status;
+                    this.questionStatusMap.set(
+                        q.frontendQuestionId,
+                        raw === 'AC' ? 'ac' : raw === 'TRIED' ? 'notac' : null
+                    );
                 }
             }
         } catch (error) {
