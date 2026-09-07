@@ -717,6 +717,11 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							apiJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.apiJs)).toString(),
 							hlsJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.hlsJs)).toString()
 						} : null;
+						const playerAssetsJson = JSON.stringify(playerView ? {
+							apiJs: playerView.apiJs,
+							apiCss: playerView.css,
+							hlsJs: playerView.hlsJs
+						} : { apiJs: '', apiCss: '', hlsJs: '' });
 						return `
 						<!DOCTYPE html>
 					<html lang="zh-CN">
@@ -1013,8 +1018,7 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-							<!-- 加载视频播放资源（Aliplayer + hls.js，本地 vendor）：HLS 走 hls.js，Aliplayer 兜底 -->
-							${playerView ? `<link rel="stylesheet" href="${playerView.css}"><script src="${playerView.apiJs}"></script><script src="${playerView.hlsJs}"></script>` : ''}
+							<!-- 视频播放资源（Aliplayer/hls.js，本地 vendor）在点击视频时按需加载，不进首屏 -->
 							<!-- 代码语法高亮由扩展端渲染时完成（vendored highlight.js），webview 仅需配色变量 -->
 					</head>
 					<body>
@@ -1090,39 +1094,57 @@ function selectLangTab(btn) {
 								return fb;
 							}
 							
-							function attachAliplayer(container, msg) {
-								if (typeof Aliplayer === 'undefined' || !msg.videoId || !msg.playAuth) {
-									container.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
-									return;
-								}
-								try {
-									new Aliplayer({
-										id: container.id,
-										vid: msg.videoId,
-										playauth: msg.playAuth,
-										cover: msg.coverUrl || '',
-										width: '100%',
-										height: '480px',
-										autoplay: true,
-										playsinline: true,
-										preload: true
-									});
-								} catch (e) {
-									container.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
-								}
+							// 视频播放资源按需加载：仅在点击视频时注入 Aliplayer/hls.js，避免影响题解首屏渲染
+							var LEETCODE_PLAYER_ASSETS = ${playerAssetsJson};
+							function loadPlayerScript(src, cb) {
+								if (!src) { cb(false); return; }
+								var s = document.createElement('script');
+								s.src = src;
+								s.onload = function() { cb(true); };
+								s.onerror = function() { cb(false); };
+								document.head.appendChild(s);
+							}
+							function ensurePlayer(kind, cb) {
+								if (kind === 'hls' && typeof Hls !== 'undefined') { cb(true); return; }
+								if (kind === 'aliplayer' && typeof Aliplayer !== 'undefined') { cb(true); return; }
+								loadPlayerScript(kind === 'hls' ? LEETCODE_PLAYER_ASSETS.hlsJs : LEETCODE_PLAYER_ASSETS.apiJs, cb);
+							}
+							function ensureAliplayerCss() {
+								if (!LEETCODE_PLAYER_ASSETS.apiCss || document.querySelector('link[data-lc-aliplayer-css]')) return;
+								var l = document.createElement('link');
+								l.rel = 'stylesheet';
+								l.href = LEETCODE_PLAYER_ASSETS.apiCss;
+								l.setAttribute('data-lc-aliplayer-css', '1');
+								document.head.appendChild(l);
 							}
 							
-							window.addEventListener('message', function(ev) {
-								var msg = ev.data;
-								if (!msg || msg.type !== 'videoReady') return;
-								var btn = document.querySelector('.video-link[data-loading="1"]');
-								if (!btn) return;
-								var container = document.createElement('div');
-								container.className = 'article-video';
-								container.id = 'lc-video-' + Date.now();
-								btn.replaceWith(container);
-								// 无直链（凭证获取失败等）时尝试 Aliplayer，再不行给浏览器入口
-								if (msg.error || !msg.videoUrl) {
+							function attachAliplayer(container, msg) {
+								ensureAliplayerCss();
+								ensurePlayer('aliplayer', function(ok) {
+									if (!ok || typeof Aliplayer === 'undefined' || !msg.videoId || !msg.playAuth) {
+										container.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
+										return;
+									}
+									try {
+										new Aliplayer({
+											id: container.id,
+											vid: msg.videoId,
+											playauth: msg.playAuth,
+											cover: msg.coverUrl || '',
+											width: '100%',
+											height: '480px',
+											autoplay: true,
+											playsinline: true,
+											preload: true
+										});
+									} catch (e) {
+										container.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
+									}
+								});
+							}
+							
+							function setupVideoPlayer(container, msg) {
+								if (!msg.videoUrl) {
 									attachAliplayer(container, msg);
 									return;
 								}
@@ -1134,26 +1156,44 @@ function selectLangTab(btn) {
 								container.appendChild(v);
 								var isHls = /\.m3u8(\?|$)/i.test(msg.videoUrl || '');
 								var fallbackOnFail = function() { attachAliplayer(container, msg); };
-								if (isHls && typeof Hls !== 'undefined' && Hls.isSupported()) {
-									try {
-										var hls = new Hls({ enableWorker: true });
-										hls.loadSource(msg.videoUrl);
-										hls.attachMedia(v);
-										hls.on(Hls.Events.ERROR, function(evt, data) {
-											if (data && data.fatal) {
-												try { hls.destroy(); } catch (e2) {}
-												fallbackOnFail();
-											}
-										});
-									} catch (e) {
-										fallbackOnFail();
-										return;
-									}
-								} else {
-									v.addEventListener('error', fallbackOnFail);
-									v.src = msg.videoUrl;
+								if (isHls) {
+									ensurePlayer('hls', function(ok) {
+										if (!ok || typeof Hls === 'undefined' || !Hls.isSupported()) {
+											fallbackOnFail();
+											return;
+										}
+										try {
+											var hls = new Hls({ enableWorker: true });
+											hls.loadSource(msg.videoUrl);
+											hls.attachMedia(v);
+											hls.on(Hls.Events.ERROR, function(evt, data) {
+												if (data && data.fatal) {
+													try { hls.destroy(); } catch (e2) {}
+													fallbackOnFail();
+												}
+											});
+											v.play().catch(function() {});
+										} catch (e) {
+											fallbackOnFail();
+										}
+									});
+									return;
 								}
+								v.addEventListener('error', fallbackOnFail);
+								v.src = msg.videoUrl;
 								v.play().catch(function() {});
+							}
+							
+							window.addEventListener('message', function(ev) {
+								var msg = ev.data;
+								if (!msg || msg.type !== 'videoReady') return;
+								var btn = document.querySelector('.video-link[data-loading="1"]');
+								if (!btn) return;
+								var container = document.createElement('div');
+								container.className = 'article-video';
+								container.id = 'lc-video-' + Date.now();
+								btn.replaceWith(container);
+								setupVideoPlayer(container, msg);
 							});
 							
 							// 若 KaTeX 从 CDN 加载成功，则渲染 $$/$ 数学公式；失败时公式保留为原文
