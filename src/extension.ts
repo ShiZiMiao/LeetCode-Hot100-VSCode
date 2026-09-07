@@ -1088,8 +1088,7 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 								--lc-number: #005cc5;
 								--lc-built: #e36209;
 							}
-							@media (prefers-color-scheme: dark) {
-								:root {
+							body[data-lc-theme="dark"] {
 								--lc-base: #e6edf3;
 								--lc-keyword: #ff7b72;
 								--lc-string: #a5d6ff;
@@ -1097,7 +1096,6 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 								--lc-title: #d2a8ff;
 								--lc-number: #79c0ff;
 								--lc-built: #ffa657;
-								}
 							}
 							/* 兜底：任何主题下 token 背景一律透明 */
 							.solution-content pre code span,
@@ -1196,12 +1194,44 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 						
 						<script>
 const vscode = acquireVsCodeApi();
-								let solutionLoaded = false;
-								
-								// 代码配色由 CSS @media (prefers-color-scheme) 自动跟随 VS Code 主题，无需 JS 判定
+									let solutionLoaded = false;
+									
+									// 代码主题判定：读取 --vscode-editor-background 的实际计算值（跟随编辑器主题），
+									// 用探针元素保证非透明；不依赖 prefers-color-scheme（webview 跟随的是操作系统）
+									(function() {
+										function getProbe() {
+											var probe = document.getElementById('lc-theme-probe');
+											if (!probe) {
+												probe = document.createElement('div');
+												probe.id = 'lc-theme-probe';
+												probe.style.cssText = 'position:absolute;width:2px;height:2px;top:-10px;left:-10px;background:var(--vscode-editor-background,#ffffff);';
+												document.body.appendChild(probe);
+											}
+											return probe;
+										}
+										function applyLcTheme() {
+											var c = getComputedStyle(getProbe()).backgroundColor;
+											var m = c.match(/\d+/g);
+											var dark = false;
+											if (m) {
+												var lum = 0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2]);
+												dark = lum < 160;
+											}
+											document.body.setAttribute('data-lc-theme', dark ? 'dark' : 'light');
+										}
+										applyLcTheme();
+										var lastVal = '';
+										setInterval(function() {
+											var v = getComputedStyle(getProbe()).backgroundColor;
+											if (v !== lastVal) {
+												lastVal = v;
+												applyLcTheme();
+											}
+										}, 1000);
+									})();
 
-							
-							function switchTab(tab) {
+								
+								function switchTab(tab) {
 								document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
 								document.querySelector('.tab:nth-child(' + (tab === 'problem' ? '1' : '2') + ')').classList.add('active');
 								
