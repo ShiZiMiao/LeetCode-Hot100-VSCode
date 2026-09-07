@@ -1195,18 +1195,37 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 const vscode = acquireVsCodeApi();
 								let solutionLoaded = false;
 								
-								// 代码配色主题：以 webview 实际背景亮度为唯一判定源，实时跟随主题切换
+								// 代码配色主题：以 webview 实际可见背景为唯一判定源，实时跟随主题切换
 								(function() {
 									var lastBg = '';
+									// 依次取 body → 内容容器 → 区块背景，跳过透明值；全透明按浅色处理
+									function readBg() {
+										var els = [document.body, document.querySelector('.content-wrapper'), document.querySelector('.solution-section'), document.querySelector('.tabs')];
+										for (var i = 0; i < els.length; i++) {
+											if (!els[i]) { continue; }
+											var c = getComputedStyle(els[i]).backgroundColor;
+											if (c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)' && c !== 'rgba(255, 255, 255, 0)') {
+												return c;
+											}
+										}
+										return '';
+									}
 									function applyLcTheme() {
-										var m = getComputedStyle(document.body).backgroundColor.match(/\d+/g);
-										var dark = true;
+										var c = readBg();
+										var m = c.match(/\d+/g);
+										var dark = false;
 										if (m) {
 											var lum = 0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2]);
 											dark = lum < 160;
 										}
+										if (!m) {
+											// 背景不可读时，回退到 prefers-color-scheme（webview 跟随 VS Code 主题）
+											try {
+												dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+											} catch (e) {}
+										}
 										document.body.setAttribute('data-lc-theme', dark ? 'dark' : 'light');
-										lastBg = getComputedStyle(document.body).backgroundColor;
+										lastBg = c;
 									}
 									applyLcTheme();
 									try {
@@ -1217,9 +1236,9 @@ const vscode = acquireVsCodeApi();
 											mq.addListener(applyLcTheme);
 										}
 									} catch (e) {}
-									// 兜底：body 背景变化即重判（覆盖主题切换事件缺失的场景）
+									// 兜底：背景变化即重判（覆盖主题切换事件缺失的场景）
 									setInterval(function() {
-										var bg = getComputedStyle(document.body).backgroundColor;
+										var bg = readBg();
 										if (bg !== lastBg) {
 											applyLcTheme();
 										}
