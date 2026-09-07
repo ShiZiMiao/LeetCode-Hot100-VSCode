@@ -380,10 +380,31 @@ function isDarkEditorTheme(): boolean {
 	}
 }
 
-// 视频播放资源（阿里云 Aliplayer + hls.js + ffmpeg.wasm），本地 vendor，不依赖 CDN
-let playerFiles: { apiJs: string; apiCss: string; hlsJs: string; ffmpegJs: string; utilJs: string; ffmpegCoreJs: string; ffmpegCoreWasm: string } | null = null;
+// ffmpeg.wasm 核心（扩展端运行，TS→MP4 纯 remux；webview 只做原生播放）
+let ffmpegCorePromise: Promise<any> | null = null;
 
-function getPlayerFiles(context: vscode.ExtensionContext): { apiJs: string; apiCss: string; hlsJs: string; ffmpegJs: string; utilJs: string; ffmpegCoreJs: string; ffmpegCoreWasm: string } | null {
+function getFfmpegCore(context: vscode.ExtensionContext): Promise<any> {
+	if (!ffmpegCorePromise) {
+		const corePath = path.join(context.extensionPath, 'vendor', 'ffmpeg', 'ffmpeg-core.js');
+		ffmpegCorePromise = (async () => {
+			// Node >= 22.12 支持 require(ESM)，失败时退回动态 import
+			try {
+				const mod = require(corePath);
+				return mod.default || mod;
+			} catch (e) {
+				const dynamicImport = new Function('url', 'return import(url)') as (u: string) => Promise<any>;
+				const mod = await dynamicImport('file:///' + corePath.replace(/\\/g, '/'));
+				return mod.default;
+			}
+		})();
+	}
+	return ffmpegCorePromise;
+}
+
+// 视频播放资源（阿里云 Aliplayer + hls.js，本地 vendor，不依赖 CDN）
+let playerFiles: { apiJs: string; apiCss: string; hlsJs: string } | null = null;
+
+function getPlayerFiles(context: vscode.ExtensionContext): { apiJs: string; apiCss: string; hlsJs: string } | null {
 	if (playerFiles) {
 		return playerFiles;
 	}
@@ -391,14 +412,10 @@ function getPlayerFiles(context: vscode.ExtensionContext): { apiJs: string; apiC
 	const apiJs = path.join(base, 'aliplayer-min.js');
 	const apiCss = path.join(base, 'aliplayer-min.css');
 	const hlsJs = path.join(base, 'hls.min.js');
-	const ffmpegJs = path.join(base, 'ffmpeg', 'ffmpeg.js');
-	const utilJs = path.join(base, 'ffmpeg', 'util.js');
-	const ffmpegCoreJs = path.join(base, 'ffmpeg', 'ffmpeg-core.js');
-	const ffmpegCoreWasm = path.join(base, 'ffmpeg', 'ffmpeg-core.wasm');
-	if (!fs.existsSync(apiJs) || !fs.existsSync(apiCss) || !fs.existsSync(hlsJs) || !fs.existsSync(ffmpegJs) || !fs.existsSync(utilJs) || !fs.existsSync(ffmpegCoreJs) || !fs.existsSync(ffmpegCoreWasm)) {
+	if (!fs.existsSync(apiJs) || !fs.existsSync(apiCss) || !fs.existsSync(hlsJs)) {
 		return null;
 	}
-	playerFiles = { apiJs, apiCss, hlsJs, ffmpegJs, utilJs, ffmpegCoreJs, ffmpegCoreWasm };
+	playerFiles = { apiJs, apiCss, hlsJs };
 	return playerFiles;
 }
 
@@ -719,21 +736,13 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 						const playerView = playerFiles ? {
 							css: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.apiCss)).toString(),
 							apiJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.apiJs)).toString(),
-							hlsJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.hlsJs)).toString(),
-							ffmpegJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.ffmpegJs)).toString(),
-							utilJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.utilJs)).toString(),
-							ffmpegCoreJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.ffmpegCoreJs)).toString(),
-							ffmpegCoreWasm: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.ffmpegCoreWasm)).toString()
+							hlsJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.hlsJs)).toString()
 						} : null;
 						const playerAssetsJson = JSON.stringify(playerView ? {
 							apiJs: playerView.apiJs,
 							apiCss: playerView.css,
-							hlsJs: playerView.hlsJs,
-							ffmpegJs: playerView.ffmpegJs,
-							utilJs: playerView.utilJs,
-							ffmpegCoreJs: playerView.ffmpegCoreJs,
-							ffmpegCoreWasm: playerView.ffmpegCoreWasm
-						} : { apiJs: '', apiCss: '', hlsJs: '', ffmpegJs: '', utilJs: '', ffmpegCoreJs: '', ffmpegCoreWasm: '' });
+							hlsJs: playerView.hlsJs
+						} : { apiJs: '', apiCss: '', hlsJs: '' });
 						return `
 						<!DOCTYPE html>
 					<html lang="zh-CN">
@@ -1116,17 +1125,6 @@ function selectLangTab(btn) {
 								s.onerror = function() { cb(false); };
 								document.head.appendChild(s);
 							}
-							function loadScripts(list, cb) {
-								var i = 0;
-								(function next() {
-									if (i >= list.length) { cb(true); return; }
-									var s = document.createElement('script');
-									s.src = list[i++];
-									s.onload = next;
-									s.onerror = function() { cb(false); };
-									document.head.appendChild(s);
-								})();
-							}
 							function ensurePlayer(kind, cb) {
 								if (kind === 'hls' && typeof Hls !== 'undefined') { cb(true); return; }
 								if (kind === 'aliplayer' && typeof Aliplayer !== 'undefined') { cb(true); return; }
@@ -1141,35 +1139,6 @@ function selectLangTab(btn) {
 								document.head.appendChild(l);
 							}
 							
-							// ffmpeg.wasm：把扩展端合并的 TS 重封装为 MP4（-c copy，不转码），原生 <video> 播放
-							var ffmpegInstance = null;
-							function ensureFfmpeg(cb) {
-								if (ffmpegInstance) { cb(true); return; }
-								// UMD 全局：FFmpegWASM.FFmpeg / FFmpegUtil.toBlobURL（已在真实浏览器验证）
-								var FFmpegClass = (window.FFmpegWASM && window.FFmpegWASM.FFmpeg) || null;
-								var blobUrlFn = window.FFmpegUtil && window.FFmpegUtil.toBlobURL;
-								if (!FFmpegClass || !blobUrlFn) { cb(false); return; }
-								try {
-									ffmpegInstance = new FFmpegClass();
-									Promise.all([
-										blobUrlFn(LEETCODE_PLAYER_ASSETS.ffmpegCoreJs, 'text/javascript'),
-										blobUrlFn(LEETCODE_PLAYER_ASSETS.ffmpegCoreWasm, 'application/wasm')
-									]).then(function(urls) {
-										return ffmpegInstance.load({ coreURL: urls[0], wasmURL: urls[1] });
-									}).then(function() {
-										cb(true);
-									}).catch(function(e) {
-										ffmpegInstance = null;
-										debug('ffmpeg.load.' + e);
-										cb(false);
-									});
-								} catch (e) {
-									ffmpegInstance = null;
-									debug('ffmpeg.new.' + e);
-									cb(false);
-								}
-							}
-
 							function attachAliplayer(container, msg) {
 								ensureAliplayerCss();
 								ensurePlayer('aliplayer', function(ok) {
@@ -1213,33 +1182,7 @@ function selectLangTab(btn) {
 								v.poster = msg.coverUrl || '';
 								container.appendChild(v);
 								var isHls = (msg.videoUrl || '').indexOf('.m3u8') !== -1;
-								var isMergedTs = (msg.videoUrl || '').indexOf('.ts') !== -1;
 								var fallbackOnFail = function() { attachAliplayer(container, msg); };
-								if (isMergedTs) {
-									// 合并 TS 先尝试 ffmpeg.wasm remux 为 MP4 再原生播放（webview 不支持 TS 容器）
-									v.addEventListener('error', fallbackOnFail);
-									loadScripts([LEETCODE_PLAYER_ASSETS.ffmpegJs, LEETCODE_PLAYER_ASSETS.utilJs], function(ok) {
-										if (!ok) { debug('ffmpeg.scripts.fail'); fallbackOnFail(); return; }
-										ensureFfmpeg(function(fok) {
-											if (!fok) { fallbackOnFail(); return; }
-											fetch(msg.videoUrl)
-												.then(function(r) { if (!r.ok) throw new Error('fetch.' + r.status); return r.arrayBuffer(); })
-												.then(function(data) { return ffmpegInstance.writeFile('in.ts', new Uint8Array(data)); })
-												.then(function() { return ffmpegInstance.exec(['-i', 'in.ts', '-c', 'copy', 'out.mp4']); })
-												.then(function(rc) {
-													return ffmpegInstance.readFile('out.mp4').then(function(out) {
-														debug('ffmpeg.ok.rc=' + rc + '.bytes=' + out.byteLength);
-														var blob = new Blob([out], { type: 'video/mp4' });
-														v.src = URL.createObjectURL(blob);
-														v.play().catch(function() {});
-														return out;
-													});
-												})
-												.catch(function(e) { debug('ffmpeg.err.' + e); fallbackOnFail(); });
-										});
-									});
-									return;
-								}
 								if (isHls) {
 									ensurePlayer('hls', function(ok) {
 										if (!ok || typeof Hls === 'undefined' || !Hls.isSupported()) {
@@ -1448,19 +1391,36 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 								}
 								const dirUri = vscode.Uri.joinPath(context.globalStorageUri, 'video');
 								await vscode.workspace.fs.createDirectory(dirUri);
-								const cacheUri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '.ts');
-								let stat: vscode.FileStat | null = null;
+								const mp4Uri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '.mp4');
+								const tsUri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '.ts');
+								let mp4Stat: vscode.FileStat | null = null;
 								try {
-									stat = await vscode.workspace.fs.stat(cacheUri);
+									mp4Stat = await vscode.workspace.fs.stat(mp4Uri);
 								} catch (e) {
-									stat = null;
+									mp4Stat = null;
 								}
-								if (!stat || stat.size === 0) {
+								if (!mp4Stat || mp4Stat.size === 0) {
+									// 1) 下载合并 HLS 分段为连续 TS
 									const merged = await leetCodeApi.getVideoMergedTs(uuid);
-									await vscode.workspace.fs.writeFile(cacheUri, new Uint8Array(merged.buffer));
+									const tsBuf = Buffer.isBuffer(merged.buffer) ? merged.buffer : Buffer.from(merged.buffer);
+									await vscode.workspace.fs.writeFile(tsUri, new Uint8Array(tsBuf));
+									// 2) 扩展端 ffmpeg remux：TS → MP4（原生 <video> 可直接播放）
+									const core = await getFfmpegCore(context);
+									try {
+										core.FS.writeFile('/in.ts', new Uint8Array(tsBuf));
+										const rc = core.exec('-i', '/in.ts', '-c', 'copy', '-movflags', '+faststart', '/out.mp4');
+										const out = core.FS.readFile('/out.mp4');
+										try { core.FS.deleteFile('/in.ts'); core.FS.deleteFile('/out.mp4'); } catch (e2) { /* 忽略清理失败 */ }
+										if (rc !== 0 || !out || out.length < 1024) {
+											throw new Error('remux 返回码 ' + rc + ' 输出 ' + (out ? out.length : 0));
+										}
+										await vscode.workspace.fs.writeFile(mp4Uri, new Uint8Array(out));
+									} catch (e) {
+										throw new Error('视频转码失败: ' + (e instanceof Error ? e.message : String(e)));
+									}
 								}
 								playHolder.value = {
-									videoUrl: panel.webview.asWebviewUri(cacheUri).toString(),
+									videoUrl: panel.webview.asWebviewUri(mp4Uri).toString(),
 									videoId: meta.videoInfo.videoId,
 									coverUrl: meta.videoInfo.coverUrl || '',
 									playAuth: meta.playAuth
