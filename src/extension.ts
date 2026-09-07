@@ -148,15 +148,30 @@ function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 	return `<pre><code class="${cls}${themeClass ? ' ' + themeClass : ''}">${inner}</code></pre>`;
 }
 
+/** 官方题解标签页语言优先级：Python → C/C++ → Java → 其他（同优先级保持原文顺序） */
+function codeTabOrder(lang: string): number {
+	const l = lang.toLowerCase().replace(/\s+/g, '');
+	if (l === 'python3' || l === 'python' || l === 'py') {
+		return 0;
+	}
+	if (l === 'c' || l === 'c++' || l === 'cpp') {
+		return 1;
+	}
+	if (l === 'java') {
+		return 2;
+	}
+	return 3;
+}
+
 /**
  * 多语言代码块 → 语言标签页（保留全部语言，点击切换，类似网页版题解）。
- * preferredFirst 为 true 时，优先语言（Python3/Python → C/C++ → 其他）排到首位并默认选中。
+ * preferredFirst 为 true 时按 Python → C/C++ → Java → 其他 的顺序排列（用于官方题解）。
  */
 function renderCodeTabsHtml(blocks: MarkdownCodeBlock[], preferredFirst: boolean = false): string {
 	let ordered = blocks;
 	if (preferredFirst && blocks.length > 1) {
-		const preferred = pickPreferredCodeBlock(blocks)!;
-		ordered = [preferred, ...blocks.filter(b => b !== preferred)];
+		// sort 稳定：同一优先级内保持原文顺序
+		ordered = blocks.slice().sort((a, b) => codeTabOrder(a.lang) - codeTabOrder(b.lang));
 	}
 	const tabs = ordered.map((b, idx) => `<button class="lang-tab${idx === 0 ? ' active' : ''}" onclick="selectLangTab(this)">${escapeHtml(displayLangName(b.lang))}</button>`).join('');
 	const contents = ordered.map((b, idx) => `<div class="lang-code-block${idx === 0 ? ' active' : ''}">${renderCodeBlockHtml(b)}</div>`).join('');
