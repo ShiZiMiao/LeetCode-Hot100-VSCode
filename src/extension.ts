@@ -175,7 +175,6 @@ function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 
 function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 	const cls = block.lang ? `language-${escapeHtml(block.lang)}` : '';
-	const themeClass = isDarkEditorTheme() ? 'hljs-dark' : '';
 	// 高亮在扩展端完成：HTML 直接带 hljs 高亮标签，代码显示不依赖网络与 webview 脚本
 	let inner = escapeHtml(block.code);
 	const lang = highlightLangName(block.lang);
@@ -186,8 +185,8 @@ function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 			// 单个代码块高亮失败时回退为纯文本，不影响显示
 		}
 	}
-	// lc-pre 类名避免与旧规则 .code-block/.code-tabs 冲突；行为复制带标签页组时复制当前语言
-	return `<pre class="lc-pre"><button class="lc-copy" title="复制代码" onclick="copyCode(this)">⧉</button><code class="${cls}${themeClass ? ' ' + themeClass : ''}">${inner}</code></pre>`;
+	// 主题配色由 CSS 变量按 webview 端 data-lc-theme 自动切换，渲染侧不固化任何主题类
+	return `<pre class="lc-pre"><button class="lc-copy" title="复制代码" onclick="copyCode(this)">⧉</button><code class="${cls}">${inner}</code></pre>`;
 }
 
 /** 官方题解标签页语言优先级：Python → C/C++ → Java → 其他（同优先级保持原文顺序） */
@@ -426,15 +425,6 @@ const HLJS_LANG_MAP: Record<string, string> = {
 
 function highlightLangName(lang: string): string | null {
 	return HLJS_LANG_MAP[lang.toLowerCase()] || null;
-}
-
-/** 按 VSCode 当前主题决定代码配色（渲染时静态写入 HTML，webview 不再切换） */
-function isDarkEditorTheme(): boolean {
-	try {
-		return vscode.window.activeColorTheme?.kind !== vscode.ColorThemeKind.Light;
-	} catch (e) {
-		return true;
-	}
 }
 
 // ffmpeg.wasm 核心（扩展端运行，TS→MP4 纯 remux；webview 只做原生播放）
@@ -1066,49 +1056,72 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							.code-tabs-container {
 								margin: 16px 0;
 							}
-							/* 代码语法高亮配色（GitHub 明/暗，由扩展端按 VSCode 主题在渲染时静态选择） */
+							/* 代码语法高亮配色（GitHub 明/暗双色板，由 webview 按实际背景亮度在 data-lc-theme 上切换） */
 							.solution-content pre code {
-								color: #24292e;
+								color: var(--lc-base, #24292e);
 							}
 							.solution-content .hljs-keyword, .solution-content .hljs-literal, .solution-content .hljs-selector-tag, .solution-content .hljs-name {
-								color: #d73a49;
+								color: var(--lc-keyword, #d73a49);
 							}
 							.solution-content .hljs-string, .solution-content .hljs-regexp, .solution-content .hljs-addition, .solution-content .hljs-char.escape_ {
-								color: #032f62;
+								color: var(--lc-string, #032f62);
 							}
 							.solution-content .hljs-comment, .solution-content .hljs-quote, .solution-content .hljs-meta, .solution-content .hljs-doctag {
-								color: #6a737d;
+								color: var(--lc-comment, #6a737d);
 							}
 							.solution-content .hljs-title, .solution-content .hljs-title.class_, .solution-content .hljs-title.function_, .solution-content .hljs-section {
-								color: #6f42c1;
+								color: var(--lc-title, #6f42c1);
 							}
 							.solution-content .hljs-number, .solution-content .hljs-symbol, .solution-content .hljs-attr, .solution-content .hljs-attribute, .solution-content .hljs-variable, .solution-content .hljs-template-variable {
-								color: #005cc5;
+								color: var(--lc-number, #005cc5);
 							}
 							.solution-content .hljs-built_in, .solution-content .hljs-type, .solution-content .hljs-params, .solution-content .hljs-variable.language_ {
-								color: #e36209;
+								color: var(--lc-built, #e36209);
 							}
-							/* 暗色主题（GitHub Dark 配色） */
-							.solution-content code.hljs-dark {
-								color: #e6edf3;
+							:root {
+								--lc-base: #24292e;
+								--lc-keyword: #d73a49;
+								--lc-string: #032f62;
+								--lc-comment: #6a737d;
+								--lc-title: #6f42c1;
+								--lc-number: #005cc5;
+								--lc-built: #e36209;
 							}
-							.solution-content code.hljs-dark .hljs-keyword, .solution-content code.hljs-dark .hljs-literal, .solution-content code.hljs-dark .hljs-selector-tag, .solution-content code.hljs-dark .hljs-name {
-								color: #ff7b72;
+							body[data-lc-theme="dark"] {
+								--lc-base: #e6edf3;
+								--lc-keyword: #ff7b72;
+								--lc-string: #a5d6ff;
+								--lc-comment: #8b949e;
+								--lc-title: #d2a8ff;
+								--lc-number: #79c0ff;
+								--lc-built: #ffa657;
 							}
-							.solution-content code.hljs-dark .hljs-string, .solution-content code.hljs-dark .hljs-regexp, .solution-content code.hljs-dark .hljs-addition, .solution-content code.hljs-dark .hljs-char.escape_ {
-								color: #a5d6ff;
-							}
-							.solution-content code.hljs-dark .hljs-comment, .solution-content code.hljs-dark .hljs-quote, .solution-content code.hljs-dark .hljs-meta, .solution-content code.hljs-dark .hljs-doctag {
-								color: #8b949e;
-							}
-							.solution-content code.hljs-dark .hljs-title, .solution-content code.hljs-dark .hljs-title.class_, .solution-content code.hljs-dark .hljs-title.function_, .solution-content code.hljs-dark .hljs-section {
-								color: #d2a8ff;
-							}
-							.solution-content code.hljs-dark .hljs-number, .solution-content code.hljs-dark .hljs-symbol, .solution-content code.hljs-dark .hljs-attr, .solution-content code.hljs-dark .hljs-attribute, .solution-content code.hljs-dark .hljs-variable, .solution-content code.hljs-dark .hljs-template-variable {
-								color: #79c0ff;
-							}
-							.solution-content code.hljs-dark .hljs-built_in, .solution-content code.hljs-dark .hljs-type, .solution-content code.hljs-dark .hljs-params, .solution-content code.hljs-dark .hljs-variable.language_ {
-								color: #ffa657;
+							/* 兜底：任何主题下 token 背景一律透明 */
+							.solution-content pre code span,
+							.solution-content pre code .hljs-keyword,
+							.solution-content pre code .hljs-string,
+							.solution-content pre code .hljs-comment,
+							.solution-content pre code .hljs-title,
+							.solution-content pre code .hljs-number,
+							.solution-content pre code .hljs-built_in,
+							.solution-content pre code .hljs-literal,
+							.solution-content pre code .hljs-attr,
+							.solution-content pre code .hljs-type,
+							.solution-content pre code .hljs-params,
+							.solution-content pre code .hljs-variable,
+							.solution-content pre code .hljs-symbol,
+							.solution-content pre code .hljs-meta,
+							.solution-content pre code .hljs-regexp,
+							.solution-content pre code .hljs-quote,
+							.solution-content pre code .hljs-addition,
+							.solution-content pre code .hljs-doctag,
+							.solution-content pre code .hljs-selector-tag,
+							.solution-content pre code .hljs-name,
+							.solution-content pre code .hljs-attribute,
+							.solution-content pre code .hljs-template-variable,
+							.solution-content pre code .hljs-variable.language_ {
+								background: transparent !important;
+								box-shadow: none !important;
 							}
 							video.article-video {
 								max-width: 100%;
@@ -1179,8 +1192,39 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 						</div>
 						
 						<script>
-							const vscode = acquireVsCodeApi();
-							let solutionLoaded = false;
+const vscode = acquireVsCodeApi();
+								let solutionLoaded = false;
+								
+								// 代码配色主题：以 webview 实际背景亮度为唯一判定源，实时跟随主题切换
+								(function() {
+									var lastBg = '';
+									function applyLcTheme() {
+										var m = getComputedStyle(document.body).backgroundColor.match(/\d+/g);
+										var dark = true;
+										if (m) {
+											var lum = 0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2]);
+											dark = lum < 160;
+										}
+										document.body.setAttribute('data-lc-theme', dark ? 'dark' : 'light');
+										lastBg = getComputedStyle(document.body).backgroundColor;
+									}
+									applyLcTheme();
+									try {
+										var mq = window.matchMedia('(prefers-color-scheme: dark)');
+										if (mq.addEventListener) {
+											mq.addEventListener('change', applyLcTheme);
+										} else if (mq.addListener) {
+											mq.addListener(applyLcTheme);
+										}
+									} catch (e) {}
+									// 兜底：body 背景变化即重判（覆盖主题切换事件缺失的场景）
+									setInterval(function() {
+										var bg = getComputedStyle(document.body).backgroundColor;
+										if (bg !== lastBg) {
+											applyLcTheme();
+										}
+									}, 1500);
+								})();
 							
 							function switchTab(tab) {
 								document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
