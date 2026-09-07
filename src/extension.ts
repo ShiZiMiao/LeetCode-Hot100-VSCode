@@ -1088,7 +1088,10 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 								--lc-number: #005cc5;
 								--lc-built: #e36209;
 							}
-							body[data-lc-theme="dark"] {
+							body[data-lc-theme="dark"],
+								body[data-vscode-theme-kind="vscode-dark"],
+								body[data-vscode-theme-kind="vscode-high-contrast-dark"],
+								body[data-vscode-theme-kind="vscode-high-contrast"] {
 								--lc-base: #e6edf3;
 								--lc-keyword: #ff7b72;
 								--lc-string: #a5d6ff;
@@ -1234,10 +1237,12 @@ const vscode = acquireVsCodeApi();
 											document.documentElement.style.setProperty('--lc-built', vars.built);
 											document.body.setAttribute('data-lc-theme', dark ? 'dark' : 'light');
 											try {
-												vscode.postMessage({ type: 'videoDebug', info: 'theme:' + (dark ? 'dark' : 'light') + ' bg:' + c + ' lum:' + (m ? (0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2])).toFixed(1) : 'N/A') });
+												vscode.postMessage({ type: 'videoDebug', info: 'theme:' + (dark ? 'dark' : 'light') + ' bg:' + c + ' lum:' + (m ? (0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2])).toFixed(1) : 'N/A') + ' kind:' + (document.body.getAttribute('data-vscode-theme-kind') || 'none') });
 											} catch (e) {}
 										}
 										applyLcTheme();
+										setTimeout(function() { applyLcTheme(); }, 500);
+										setTimeout(function() { applyLcTheme(); }, 2500);
 										var lastVal = '';
 										setInterval(function() {
 											var v = readBg();
