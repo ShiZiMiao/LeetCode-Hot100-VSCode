@@ -186,7 +186,8 @@ function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 			// 单个代码块高亮失败时回退为纯文本，不影响显示
 		}
 	}
-	return `<pre><code class="${cls}${themeClass ? ' ' + themeClass : ''}">${inner}</code></pre>`;
+	// pre 类名不能叫 code-block：样式表有旧规则 .code-block { display:none } 会隐藏代码
+	return `<pre class="lc-code${themeClass ? ' ' + themeClass : ''}"><code class="${cls}${themeClass ? ' ' + themeClass : ''}">${inner}</code></pre>`;
 }
 
 /** 官方题解标签页语言优先级：Python → C/C++ → Java → 其他（同优先级保持原文顺序） */
@@ -919,7 +920,7 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							.hidden { display: none; }
 							/* 代码高亮样式 */
 							.solution-content pre {
-								background: color-mix(in srgb, var(--vscode-textPreformat-background) 75%, white 25%);
+								background: var(--vscode-textPreformat-background);
 								padding: 16px;
 								border-radius: 6px;
 								overflow-x: auto;
@@ -1019,6 +1020,12 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 								margin: 16px 0;
 							}
 							/* 代码语法高亮配色（GitHub 明/暗，由扩展端按 VSCode 主题在渲染时静态选择） */
+							.solution-content pre.lc-code {
+								background: #f6f8fa; /* 浅色主题背景（GitHub Light） */
+							}
+							.solution-content pre.lc-code.hljs-dark {
+								background: #161b22; /* 深色主题背景（GitHub Dark） */
+							}
 							.solution-content pre code {
 								color: #24292e;
 							}
