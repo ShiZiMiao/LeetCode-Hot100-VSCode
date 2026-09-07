@@ -513,6 +513,9 @@ export class LeetCodeApi {
                             isMyFavorite
                             isMostPopular
                             isEditorsPick
+                            topic {
+                                id
+                            }
                             upvoteCount
                             reactionsV2 {
                                 count

@@ -1284,7 +1284,7 @@ function selectLangTab(btn) {
 								// 官方题解：question.solution 的 content 只有文字 + playground iframe，
 								// 代码无法从 GraphQL 抓取且 iframe 会被整体移除；真正带代码的官方题解是
 								// byLeetcode 标记的官方文章。优先拉取该文章并静态渲染其中的代码块。
-								const officialArticleEdge = communityArticles.find((e: any) => e.node?.byLeetcode === true);
+const officialArticleEdge = communityArticles.find((e: any) => e.node?.byLeetcode === true);
 								let officialArticleHtml = '';
 								if (officialArticleEdge?.node?.slug) {
 									try {
@@ -1292,11 +1292,16 @@ function selectLangTab(btn) {
 										const article = articleData?.data?.solutionArticle;
 										if (article && article.content) {
 											const cleanedContent = sanitizeSolutionContent(article.content);
+											// 文章页 URL 需要数字 topic.id（仅 slug 会被 SPA 跳回题解列表）
+											const articleTopicId = officialArticleEdge.node?.topic?.id;
+											const solutionPageUrl = articleTopicId
+												? `https://leetcode.cn/problems/${q.titleSlug}/solutions/${articleTopicId}/${officialArticleEdge.node.slug}/`
+												: `https://leetcode.cn/problems/${q.titleSlug}/solutions/${officialArticleEdge.node.slug}/`;
 											officialArticleHtml = `
 												<div class="solution-section">
 													<h2>📖 官方题解</h2>
-<div class="article-meta" style="margin-bottom:12px;">👑 LeetCode 官方 | 👍 ${article.upvoteCount}</div>
-														<div class="solution-content">${renderMarkdownToHtml(cleanedContent, 'all', true, `https://leetcode.cn/problems/${q.titleSlug}/solutions/${officialArticleEdge.node.slug}/`)}</div>
+													<div class="article-meta" style="margin-bottom:12px;">👑 LeetCode 官方 | 👍 ${article.upvoteCount}</div>
+													<div class="solution-content">${renderMarkdownToHtml(cleanedContent, 'all', true, solutionPageUrl)}</div>
 												</div>
 											`;
 										}
