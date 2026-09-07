@@ -1218,6 +1218,10 @@ const vscode = acquireVsCodeApi();
 												dark = lum < 160;
 											}
 											document.body.setAttribute('data-lc-theme', dark ? 'dark' : 'light');
+											// 诊断：上报探测结果（面板可见弹窗），便于定位主题判定问题
+											try {
+												vscode.postMessage({ type: 'videoDebug', info: 'theme:' + (dark ? 'dark' : 'light') + ' bg:' + c + ' attr:' + document.body.getAttribute('data-lc-theme') });
+											} catch (e) {}
 										}
 										applyLcTheme();
 										var lastVal = '';
