@@ -186,7 +186,8 @@ function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 			// 单个代码块高亮失败时回退为纯文本，不影响显示
 		}
 	}
-	return `<pre><code class="${cls}${themeClass ? ' ' + themeClass : ''}">${inner}</code></pre>`;
+	// lc-pre 类名避免与旧规则 .code-block/.code-tabs 冲突；行为复制带标签页组时复制当前语言
+	return `<pre class="lc-pre"><button class="lc-copy" title="复制代码" onclick="copyCode(this)">⧉</button><code class="${cls}${themeClass ? ' ' + themeClass : ''}">${inner}</code></pre>`;
 }
 
 /** 官方题解标签页语言优先级：Python → C/C++ → Java → 其他（同优先级保持原文顺序） */
@@ -919,6 +920,7 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							.hidden { display: none; }
 							/* 代码高亮样式 */
 							.solution-content pre {
+								position: relative;
 								background: var(--vscode-textPreformat-background);
 								padding: 16px;
 								border-radius: 6px;
@@ -945,12 +947,31 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 								padding: 8px 16px;
 								background: var(--vscode-textBlockQuote-background);
 							}
-							.solution-content ul, .solution-content ol {
-								padding-left: 24px;
-							}
-							.solution-content a {
-								color: var(--vscode-textLink-foreground);
-							}
+.solution-content ul, .solution-content ol {
+									padding-left: 24px;
+								}
+								.solution-content a {
+									color: var(--vscode-textLink-foreground);
+								}
+								/* 代码块复制按钮（右上角） */
+								.lc-copy {
+									position: absolute;
+									top: 6px;
+									right: 8px;
+									background: transparent;
+									border: none;
+									cursor: pointer;
+									font-size: 14px;
+									line-height: 1;
+									padding: 4px 6px;
+									border-radius: 4px;
+									color: var(--vscode-descriptionForeground);
+									opacity: 0.7;
+								}
+								.lc-copy:hover {
+									opacity: 1;
+									background: var(--vscode-tab-hoverBackground);
+								}
 							/* 代码块标签样式 */
 							.code-tabs {
 								display: flex;
@@ -1158,6 +1179,23 @@ function selectLangTab(btn) {
 								box.querySelectorAll('.lang-code-block').forEach(function(b) { b.classList.remove('active'); });
 								btn.classList.add('active');
 								box.querySelectorAll('.lang-code-block')[idx].classList.add('active');
+							}
+							
+							// 复制代码块内容（标签页组内复制当前激活语言；纯文本取自 textContent，不受高亮 span 影响）
+							function copyCode(btn) {
+								var container = btn.closest('.code-tabs-container');
+								var code = null;
+								if (container) {
+									var active = container.querySelector('.lang-code-block.active code, .lang-code-block code');
+									code = container.querySelector('.lang-code-block.active code') || active;
+								}
+								if (!code) {
+									var pre = btn.closest('pre');
+									code = pre ? pre.querySelector('code') : null;
+								}
+								if (code) {
+									vscode.postMessage({ type: 'copyCode', text: code.textContent || '' });
+								}
 							}
 							
 							// 视频题解：请求扩展端查询阿里云 VOD playAuth 播放凭证，成功后用 Aliplayer 内嵌播放；
@@ -1522,7 +1560,10 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 						} else if (message.type === 'openExternal' && typeof message.url === 'string' && message.url.startsWith('https://leetcode.cn/')) {
 							// 视频题解等无法在 webview 内播放的内容，交给系统默认浏览器打开
 							vscode.env.openExternal(vscode.Uri.parse(message.url));
-						} else if (message.type === 'openArticle') {
+						} else if (message.type === 'copyCode') {
+						await vscode.env.clipboard.writeText(String(message.text || ''));
+						vscode.window.setStatusBarMessage('已复制代码', 2000);
+					} else if (message.type === 'openArticle') {
 						try {
 							const articleData = await leetCodeApi.getSolutionArticle(message.slug);
 							const article = articleData?.data?.solutionArticle;
