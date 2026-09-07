@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vm from 'vm';
+import { createHash } from 'crypto';
 import { AuthManager } from './core/authManager';
 import { LeetCodeApi, Question } from './core/leetcodeApi';
 import { Hot100Provider } from './views/hot100Provider';
@@ -36,6 +37,46 @@ function escapeHtml(text: string): string {
 		.replace(/</g, '&lt;')
 		.replace(/>/g, '&gt;')
 		.replace(/"/g, '&quot;');
+}
+
+/**
+ * 把 HTML 中的 http(s) 图片下载到本地缓存，并替换为 webview 可访问的 asWebviewUri，
+ * 避免 webview 加载外部图片失败（如 assets.leetcode.com 等域名）。
+ */
+async function localizeContentImages(html: string, panel: vscode.WebviewPanel, context: vscode.ExtensionContext, api: LeetCodeApi): Promise<string> {
+	const srcs = [...new Set([...html.matchAll(/src="(https?:\/\/[^"]+)"/gi)].map(m => m[1]))];
+	if (srcs.length === 0) {
+		return html;
+	}
+	const dirUri = vscode.Uri.joinPath(context.globalStorageUri, 'img');
+	await vscode.workspace.fs.createDirectory(dirUri);
+	let out = html;
+	for (const src of srcs) {
+		try {
+			const extMatch = src.match(/\.(png|jpe?g|gif|webp|svg)(\?|$)/i);
+			const ext = extMatch ? '.' + extMatch[1].toLowerCase() : '.png';
+			const hash = createHash('sha1').update(src).digest('hex').slice(0, 16);
+			const fileUri = vscode.Uri.joinPath(dirUri, hash + ext);
+			let stat: vscode.FileStat | null = null;
+			try {
+				stat = await vscode.workspace.fs.stat(fileUri);
+			} catch (e) {
+				stat = null;
+			}
+			if (!stat || stat.size === 0) {
+				const buf = await api.downloadBinaryRaw(src);
+				if (!buf || buf.length === 0) {
+					continue;
+				}
+				await vscode.workspace.fs.writeFile(fileUri, new Uint8Array(buf));
+			}
+			const localUri = panel.webview.asWebviewUri(fileUri).toString();
+			out = out.split(src).join(localUri);
+		} catch (e) {
+			// 单张图失败保留原地址，不阻断其余内容
+		}
+	}
+	return out;
 }
 
 /**
@@ -746,7 +787,7 @@ export function activate(context: vscode.ExtensionContext) {
 				);
 
 				// 使用中文内容（translatedContent），如果没有则使用英文
-				const questionContent = q.translatedContent || q.content;
+				let questionContent = q.translatedContent || q.content;
 				const title = q.translatedTitle || q.title;
 				const difficultyMap: Record<string, string> = {
 					'Easy': '简单',
@@ -1269,6 +1310,8 @@ function selectLangTab(btn) {
 					`;
 					};
 
+					// 题目内容中的外链图片下载到本地缓存（webview 直连外部图可能失败）
+					questionContent = await localizeContentImages(questionContent, panel, context, leetCodeApi);
 					panel.webview.html = generatePanelHtml('problem');
 
 				// 处理消息（外层兜底：任何异常都提示用户，避免静默失败）
@@ -1397,6 +1440,7 @@ const officialArticleEdge = communityArticles.find((e: any) => e.node?.byLeetcod
 								solutionHtml = '<div class="loading">暂无题解</div>';
 							}
 
+							solutionHtml = await localizeContentImages(solutionHtml, panel, context, leetCodeApi);
 							panel.webview.html = generatePanelHtml('solution', solutionHtml);
 						} catch (error) {
 							panel.webview.html = generatePanelHtml('solution', `<div class="loading">加载题解失败: ${error}</div>`);
@@ -1485,7 +1529,7 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 							if (article) {
 // 清理内容中的 iframe，避免 webview 中被重定向为登录页
 									const cleanedArticle = sanitizeSolutionContent(article.content || '');
-									const articleHtml = `
+									let articleHtml = `
 										<div class="solution-section">
 											<button onclick="vscode.postMessage({type:'loadSolution'})" style="background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-bottom:20px;">← 返回列表</button>
 											<h2>${article.title}</h2>
@@ -1493,7 +1537,8 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 											<div class="solution-content">${renderMarkdownToHtml(cleanedArticle, 'all')}</div>
 										</div>
 									`;
-								panel.webview.html = generatePanelHtml('solution', articleHtml);
+								articleHtml = await localizeContentImages(articleHtml, panel, context, leetCodeApi);
+									panel.webview.html = generatePanelHtml('solution', articleHtml);
 							}
 						} catch (error) {
 							vscode.window.showErrorMessage(`加载题解失败: ${error}`);

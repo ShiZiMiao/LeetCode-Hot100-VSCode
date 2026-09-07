@@ -14,7 +14,7 @@ export interface LanguageInfo {
 
 // LeetCode支持的语言列表
 export const SUPPORTED_LANGUAGES: LanguageInfo[] = [
-    { slug: 'python3', displayName: 'Python 3', extension: 'py' },
+    { slug: 'python3', displayName: 'Python3', extension: 'py' },
     { slug: 'python', displayName: 'Python', extension: 'py' },
     { slug: 'java', displayName: 'Java', extension: 'java' },
     { slug: 'cpp', displayName: 'C++', extension: 'cpp' },
