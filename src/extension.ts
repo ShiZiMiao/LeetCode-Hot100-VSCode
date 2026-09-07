@@ -1144,6 +1144,12 @@ function selectLangTab(btn) {
 							}
 							
 							function setupVideoPlayer(container, msg) {
+								function debug(info) { vscode.postMessage({ type: 'videoDebug', info: info }); }
+								// 编解码能力检测（Electron 可能缺少 H.264/AAC 解码器）
+								var probe = document.createElement('video');
+								debug('codec.avc1=' + probe.canPlayType('video/mp4; codecs="avc1.42E01E"').toUpperCase() +
+									' codec.hev1=' + probe.canPlayType('video/mp4; codecs="hev1.1.6.L93.90"').toUpperCase() +
+									' h264Ts=' + probe.canPlayType('video/mp2t; codecs="avc1.42E01E"').toUpperCase());
 								if (!msg.videoUrl) {
 									attachAliplayer(container, msg);
 									return;
@@ -1163,10 +1169,11 @@ function selectLangTab(btn) {
 											return;
 										}
 										try {
-											var hls = new Hls({ enableWorker: true });
+											var hls = new Hls({ enableWorker: false });
 											hls.loadSource(msg.videoUrl);
 											hls.attachMedia(v);
 											hls.on(Hls.Events.ERROR, function(evt, data) {
+												debug('hls.' + (data && data.details) + ' fatal=' + (data && data.fatal) + ' network=' + (data && data.networkDetails) + ' err=' + (data && data.error));
 												if (data && data.fatal) {
 													try { hls.destroy(); } catch (e2) {}
 													fallbackOnFail();
@@ -1174,6 +1181,7 @@ function selectLangTab(btn) {
 											});
 											v.play().catch(function() {});
 										} catch (e) {
+											debug('hls.new.' + e);
 											fallbackOnFail();
 										}
 									});
@@ -1368,7 +1376,10 @@ function selectLangTab(btn) {
 							vscode.window.showWarningMessage(`视频题解加载失败：${error instanceof Error ? error.message : '未知错误'}`);
 							panel.webview.postMessage({ type: 'videoReady', error: true, pageUrl: message.pageUrl });
 						}
-					} else if (message.type === 'openExternal' && typeof message.url === 'string' && message.url.startsWith('https://leetcode.cn/')) {
+					} else if (message.type === 'videoDebug') {
+							console.log('[videoDebug]', message.info);
+							vscode.window.showInformationMessage(`视频调试: ${message.info}`);
+						} else if (message.type === 'openExternal' && typeof message.url === 'string' && message.url.startsWith('https://leetcode.cn/')) {
 							// 视频题解等无法在 webview 内播放的内容，交给系统默认浏览器打开
 							vscode.env.openExternal(vscode.Uri.parse(message.url));
 						} else if (message.type === 'openArticle') {
