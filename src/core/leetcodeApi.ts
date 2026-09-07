@@ -120,6 +120,46 @@ export class LeetCodeApi {
     }
 
     /**
+     * 请求完整 URL（保留 host、path 与 query），用于阿里云 VOD 等非 leetcode.cn 域名。
+     * 与 request/get 不同：不剥 query、不改 host。
+     */
+    async getFullUrl(url: string): Promise<any> {
+        const u = new URL(url);
+        return new Promise((resolve, reject) => {
+            const req = https.request(
+                {
+                    hostname: u.hostname,
+                    port: 443,
+                    path: u.pathname + u.search,
+                    method: 'GET',
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                        'Accept': 'application/json'
+                    },
+                    rejectUnauthorized: false
+                },
+                (res) => {
+                    let body = '';
+                    res.on('data', (chunk) => body += chunk);
+                    res.on('end', () => {
+                        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                            try {
+                                resolve(JSON.parse(body));
+                            } catch (e) {
+                                reject(new Error(`响应非 JSON: ${body.slice(0, 200)}`));
+                            }
+                        } else {
+                            reject(new Error(`请求失败 status ${res.statusCode}: ${body.slice(0, 200)}`));
+                        }
+                    });
+                }
+            );
+            req.on('error', reject);
+            req.end();
+        });
+    }
+
+    /**
      * 换取视频真实播放地址（阿里云 VOD GetPlayInfo，与网页端 Aliplayer 同款签名流程）。
      * playAuth 解码后含临时 AccessKey/AuthInfo，签名请求 vod.{region}.aliyuncs.com，
      * 返回签名后的 PlayURL（通常是 m3u8，需 hls.js 播放）。
@@ -152,7 +192,9 @@ export class LeetCodeApi {
         const stringToSign = `GET&${enc('/')}&${enc(qs)}`;
         const signature = crypto.createHmac('sha1', decoded.AccessKeySecret + '&').update(stringToSign).digest('base64');
         const url = `https://vod.${decoded.Region || 'cn-shanghai'}.aliyuncs.com/?${qs}&Signature=${enc(signature)}`;
-        const res = await this.get(url);
+        // 注意：签名在 query 里，且域名是 vod.aliyuncs.com，不能经 get()/request()
+        //（会剥掉 query / 改 host），必须保留完整 host+path+query
+        const res = await this.getFullUrl(url);
         const playInfos = res?.PlayInfoList?.PlayInfo || [];
         const picked = playInfos.find((p: any) => p.Format === 'mp4') || playInfos.find((p: any) => p.Format === 'm3u8') || playInfos[0];
         if (!picked?.PlayURL) {
