@@ -175,6 +175,7 @@ function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 
 function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 	const cls = block.lang ? `language-${escapeHtml(block.lang)}` : '';
+	const themeClass = isDarkEditorTheme() ? 'hljs-dark' : '';
 	// 高亮在扩展端完成：HTML 直接带 hljs 高亮标签，代码显示不依赖网络与 webview 脚本
 	let inner = escapeHtml(block.code);
 	const lang = highlightLangName(block.lang);
@@ -185,9 +186,7 @@ function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 			// 单个代码块高亮失败时回退为纯文本，不影响显示
 		}
 	}
-	// pre 类名不能叫 code-block：样式表里有旧规则 .code-block { display:none } 会隐藏代码。
-	// 主题类由 webview 按实际背景亮度切换（body.code-theme-dark），不依赖扩展端静态判定
-	return `<pre class="lc-code"><code class="${cls}">${inner}</code></pre>`;
+	return `<pre><code class="${cls}${themeClass ? ' ' + themeClass : ''}">${inner}</code></pre>`;
 }
 
 /** 官方题解标签页语言优先级：Python → C/C++ → Java → 其他（同优先级保持原文顺序） */
@@ -428,7 +427,14 @@ function highlightLangName(lang: string): string | null {
 	return HLJS_LANG_MAP[lang.toLowerCase()] || null;
 }
 
-/** 代码配色主题由 webview 按实际背景亮度切换（body.code-theme-dark），不再依赖扩展端判定 */
+/** 按 VSCode 当前主题决定代码配色（渲染时静态写入 HTML，webview 不再切换） */
+function isDarkEditorTheme(): boolean {
+	try {
+		return vscode.window.activeColorTheme?.kind !== vscode.ColorThemeKind.Light;
+	} catch (e) {
+		return true;
+	}
+}
 
 // ffmpeg.wasm 核心（扩展端运行，TS→MP4 纯 remux；webview 只做原生播放）
 let ffmpegCorePromise: Promise<any> | null = null;
@@ -913,7 +919,7 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							.hidden { display: none; }
 							/* 代码高亮样式 */
 							.solution-content pre {
-								background: var(--vscode-textPreformat-background);
+								background: color-mix(in srgb, var(--vscode-textPreformat-background) 75%, white 25%);
 								padding: 16px;
 								border-radius: 6px;
 								overflow-x: auto;
@@ -1013,12 +1019,6 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 								margin: 16px 0;
 							}
 							/* 代码语法高亮配色（GitHub 明/暗，由扩展端按 VSCode 主题在渲染时静态选择） */
-							.solution-content pre.lc-code {
-								background: #f6f8fa; /* 浅色主题背景（GitHub Light） */
-							}
-							body.code-theme-dark .solution-content pre.lc-code {
-								background: #161b22; /* 深色主题背景（GitHub Dark） */
-							}
 							.solution-content pre code {
 								color: #24292e;
 							}
@@ -1041,25 +1041,25 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 								color: #e36209;
 							}
 							/* 暗色主题（GitHub Dark 配色） */
-							body.code-theme-dark .solution-content pre code {
+							.solution-content code.hljs-dark {
 								color: #e6edf3;
 							}
-							body.code-theme-dark .solution-content .hljs-keyword, body.code-theme-dark .solution-content .hljs-literal, body.code-theme-dark .solution-content .hljs-selector-tag, body.code-theme-dark .solution-content .hljs-name {
+							.solution-content code.hljs-dark .hljs-keyword, .solution-content code.hljs-dark .hljs-literal, .solution-content code.hljs-dark .hljs-selector-tag, .solution-content code.hljs-dark .hljs-name {
 								color: #ff7b72;
 							}
-							body.code-theme-dark .solution-content .hljs-string, body.code-theme-dark .solution-content .hljs-regexp, body.code-theme-dark .solution-content .hljs-addition, body.code-theme-dark .solution-content .hljs-char.escape_ {
+							.solution-content code.hljs-dark .hljs-string, .solution-content code.hljs-dark .hljs-regexp, .solution-content code.hljs-dark .hljs-addition, .solution-content code.hljs-dark .hljs-char.escape_ {
 								color: #a5d6ff;
 							}
-							body.code-theme-dark .solution-content .hljs-comment, body.code-theme-dark .solution-content .hljs-quote, body.code-theme-dark .solution-content .hljs-meta, body.code-theme-dark .solution-content .hljs-doctag {
+							.solution-content code.hljs-dark .hljs-comment, .solution-content code.hljs-dark .hljs-quote, .solution-content code.hljs-dark .hljs-meta, .solution-content code.hljs-dark .hljs-doctag {
 								color: #8b949e;
 							}
-							body.code-theme-dark .solution-content .hljs-title, body.code-theme-dark .solution-content .hljs-title.class_, body.code-theme-dark .solution-content .hljs-title.function_, body.code-theme-dark .solution-content .hljs-section {
+							.solution-content code.hljs-dark .hljs-title, .solution-content code.hljs-dark .hljs-title.class_, .solution-content code.hljs-dark .hljs-title.function_, .solution-content code.hljs-dark .hljs-section {
 								color: #d2a8ff;
 							}
-							body.code-theme-dark .solution-content .hljs-number, body.code-theme-dark .solution-content .hljs-symbol, body.code-theme-dark .solution-content .hljs-attr, body.code-theme-dark .solution-content .hljs-attribute, body.code-theme-dark .solution-content .hljs-variable, body.code-theme-dark .solution-content .hljs-template-variable {
+							.solution-content code.hljs-dark .hljs-number, .solution-content code.hljs-dark .hljs-symbol, .solution-content code.hljs-dark .hljs-attr, .solution-content code.hljs-dark .hljs-attribute, .solution-content code.hljs-dark .hljs-variable, .solution-content code.hljs-dark .hljs-template-variable {
 								color: #79c0ff;
 							}
-							body.code-theme-dark .solution-content .hljs-built_in, body.code-theme-dark .solution-content .hljs-type, body.code-theme-dark .solution-content .hljs-params, body.code-theme-dark .solution-content .hljs-variable.language_ {
+							.solution-content code.hljs-dark .hljs-built_in, .solution-content code.hljs-dark .hljs-type, .solution-content code.hljs-dark .hljs-params, .solution-content code.hljs-dark .hljs-variable.language_ {
 								color: #ffa657;
 							}
 							video.article-video {
@@ -1130,35 +1130,11 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							</div>
 						</div>
 						
-<script>
-								const vscode = acquireVsCodeApi();
-								let solutionLoaded = false;
-								
-								// 代码配色主题：按 webview 实际背景亮度切换 body.code-theme-dark，并实时跟随主题变化
-								(function() {
-									function applyCodeTheme() {
-										var m = getComputedStyle(document.body).backgroundColor.match(/\d+/g);
-										var dark = true;
-										if (m) {
-											var lum = 0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2]);
-											dark = lum < 160;
-										}
-										document.body.classList.toggle('code-theme-dark', dark);
-									}
-									applyCodeTheme();
-									try {
-										var lastBg = '';
-										setInterval(function() {
-											var bg = getComputedStyle(document.body).backgroundColor;
-											if (bg !== lastBg) {
-												lastBg = bg;
-												applyCodeTheme();
-											}
-										}, 1500);
-									} catch (e) {}
-								})();
-								
-								function switchTab(tab) {
+						<script>
+							const vscode = acquireVsCodeApi();
+							let solutionLoaded = false;
+							
+							function switchTab(tab) {
 								document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
 								document.querySelector('.tab:nth-child(' + (tab === 'problem' ? '1' : '2') + ')').classList.add('active');
 								
