@@ -1145,12 +1145,15 @@ function selectLangTab(btn) {
 							var ffmpegInstance = null;
 							function ensureFfmpeg(cb) {
 								if (ffmpegInstance) { cb(true); return; }
-								if (typeof FFmpeg === 'undefined' || typeof toBlobURL === 'undefined') { cb(false); return; }
+								// UMD 全局：FFmpegWASM.FFmpeg / FFmpegUtil.toBlobURL（已在真实浏览器验证）
+								var FFmpegClass = (window.FFmpegWASM && window.FFmpegWASM.FFmpeg) || null;
+								var blobUrlFn = window.FFmpegUtil && window.FFmpegUtil.toBlobURL;
+								if (!FFmpegClass || !blobUrlFn) { cb(false); return; }
 								try {
-									ffmpegInstance = new FFmpeg();
+									ffmpegInstance = new FFmpegClass();
 									Promise.all([
-										toBlobURL(LEETCODE_PLAYER_ASSETS.ffmpegCoreJs, 'text/javascript'),
-										toBlobURL(LEETCODE_PLAYER_ASSETS.ffmpegCoreWasm, 'application/wasm')
+										blobUrlFn(LEETCODE_PLAYER_ASSETS.ffmpegCoreJs, 'text/javascript'),
+										blobUrlFn(LEETCODE_PLAYER_ASSETS.ffmpegCoreWasm, 'application/wasm')
 									]).then(function(urls) {
 										return ffmpegInstance.load({ coreURL: urls[0], wasmURL: urls[1] });
 									}).then(function() {
