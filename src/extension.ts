@@ -856,7 +856,8 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							.difficulty-easy { color: #00b8a3; }
 							.difficulty-medium { color: #ffc01e; }
 							.difficulty-hard { color: #ff375f; }
-							pre {
+							/* 仅题目描述的"输入/输出"示例块（<pre>）保留背景，其余区域（提示等）无背景 */
+							.problem-content pre {
 								background-color: var(--vscode-textBlockQuote-background);
 								padding: 12px;
 								border-radius: 4px;
