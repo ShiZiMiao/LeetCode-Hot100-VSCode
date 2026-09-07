@@ -972,6 +972,33 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 									opacity: 1;
 									background: var(--vscode-tab-hoverBackground);
 								}
+								/* 高亮 token 一律透明背景，避免文字后出现难看的底色条 */
+								.solution-content pre code span,
+								.solution-content pre code .hljs-keyword,
+								.solution-content pre code .hljs-string,
+								.solution-content pre code .hljs-comment,
+								.solution-content pre code .hljs-title,
+								.solution-content pre code .hljs-number,
+								.solution-content pre code .hljs-built_in,
+								.solution-content pre code .hljs-literal,
+								.solution-content pre code .hljs-attr,
+								.solution-content pre code .hljs-type,
+								.solution-content pre code .hljs-params,
+								.solution-content pre code .hljs-variable,
+								.solution-content pre code .hljs-symbol,
+								.solution-content pre code .hljs-meta,
+								.solution-content pre code .hljs-regexp,
+								.solution-content pre code .hljs-quote,
+								.solution-content pre code .hljs-addition,
+								.solution-content pre code .hljs-doctag,
+								.solution-content pre code .hljs-selector-tag,
+								.solution-content pre code .hljs-name,
+								.solution-content pre code .hljs-attribute,
+								.solution-content pre code .hljs-template-variable,
+								.solution-content pre code .hljs-variable.language_ {
+									background: transparent !important;
+									box-shadow: none !important;
+								}
 							/* 代码块标签样式 */
 							.code-tabs {
 								display: flex;
@@ -1562,7 +1589,7 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 							vscode.env.openExternal(vscode.Uri.parse(message.url));
 						} else if (message.type === 'copyCode') {
 						await vscode.env.clipboard.writeText(String(message.text || ''));
-						vscode.window.setStatusBarMessage('已复制代码', 2000);
+						vscode.window.showInformationMessage('已复制代码');
 					} else if (message.type === 'openArticle') {
 						try {
 							const articleData = await leetCodeApi.getSolutionArticle(message.slug);
