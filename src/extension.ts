@@ -1154,7 +1154,7 @@ function selectLangTab(btn) {
 								v.playsInline = true;
 								v.poster = msg.coverUrl || '';
 								container.appendChild(v);
-								var isHls = /\.m3u8(\?|$)/i.test(msg.videoUrl || '');
+								var isHls = (msg.videoUrl || '').indexOf('.m3u8') !== -1;
 								var fallbackOnFail = function() { attachAliplayer(container, msg); };
 								if (isHls) {
 									ensurePlayer('hls', function(ok) {
