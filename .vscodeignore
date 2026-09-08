@@ -15,4 +15,5 @@ pnpm-lock.yaml
 pnpm-workspace.yaml
 *.vsix
 README_pkg.md
-vscodeignore_pkg
+**/*.pyc
+__pycache__/
