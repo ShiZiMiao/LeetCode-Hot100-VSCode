@@ -21,3 +21,7 @@ Thumbs.db
 # 日志
 *.log
 npm-debug.log*
+
+# 调试残留（本地调试会生成 __pycache__/.pyc）
+__pycache__/
+*.pyc
