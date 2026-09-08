@@ -41,7 +41,7 @@ export const HOT_100_IDS: Set<string> = new Set([
     "437", "236", "124", "200", "994", "207", "208", "46", "78", "17", "39", "22",
     "79", "131", "51", "35", "74", "34", "33", "153", "4", "20", "155", "394",
     "739", "84", "215", "347", "295", "121", "55", "45", "763", "70", "118", "198",
-    "279", "322", "139", "300", "416", "32", "62", "64", "5", "1143", "72", "136",
+    "279", "322", "139", "300", "152", "416", "32", "62", "64", "5", "1143", "72", "136",
     "169", "75", "31", "287"
 ]);
 
@@ -134,6 +134,7 @@ export const ID_TO_SLUG: Map<string, string> = new Map([
     ["322", "coin-change"],
     ["139", "word-break"],
     ["300", "longest-increasing-subsequence"],
+    ["152", "maximum-product-subarray"],
     ["416", "partition-equal-subset-sum"],
     ["32", "longest-valid-parentheses"],
     ["62", "unique-paths"],
@@ -266,6 +267,7 @@ export const HOT_100_LIST: Hot100Question[] = [
     { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "322", titleSlug: "coin-change", titleEn: "Coin Change", titleCn: "零钱兑换" },
     { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "139", titleSlug: "word-break", titleEn: "Word Break", titleCn: "单词拆分" },
     { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "300", titleSlug: "longest-increasing-subsequence", titleEn: "Longest Increasing Subsequence", titleCn: "最长递增子序列" },
+    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "152", titleSlug: "maximum-product-subarray", titleEn: "Maximum Product Subarray", titleCn: "乘积最大子数组" },
     { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "416", titleSlug: "partition-equal-subset-sum", titleEn: "Partition Equal Subset Sum", titleCn: "分割等和子集" },
     { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "32", titleSlug: "longest-valid-parentheses", titleEn: "Longest Valid Parentheses", titleCn: "最长有效括号" },
 

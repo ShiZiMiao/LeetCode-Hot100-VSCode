@@ -1,5 +1,6 @@
 
 import { AuthManager } from './authManager';
+import { HOT_100_IDS } from '../data/hot100Data';
 import * as https from 'https';
 import * as crypto from 'crypto';
 
@@ -370,15 +371,29 @@ export class LeetCodeApi {
             }
         `;
 
-        const variables = {
-            categorySlug: "",
-            skip: 0,
-            limit: 3000, // 增大limit确保覆盖所有Hot 100题目
-            filters: {}
-        };
+        // 列表接口单页最多返回 100 题（limit 传 3000 也会被截断），必须按 skip 分页。
+        // 返回按 frontendQuestionId 升序排列，Hot 100 最大题号决定所需页数；各页并行拉取。
+        const maxId = Math.max(...[...HOT_100_IDS].map(Number));
+        const skips: number[] = [];
+        for (let skip = 0; skip < maxId; skip += 100) {
+            skips.push(skip);
+        }
+        const results = await Promise.all(
+            skips.map((skip) =>
+                this.postGraphql(query, {
+                    categorySlug: "",
+                    skip,
+                    limit: 100,
+                    filters: {}
+                })
+            )
+        );
 
-        const result = await this.postGraphql(query, variables);
-        const questions = result.data?.problemsetQuestionList?.questions || [];
+        const questions: any[] = [];
+        for (const result of results) {
+            const page = result.data?.problemsetQuestionList?.questions || [];
+            questions.push(...page);
+        }
 
         // 映射为 Question 接口格式
         return questions.map((q: any) => ({

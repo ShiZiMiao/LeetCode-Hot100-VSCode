@@ -20,6 +20,8 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
     private leetCodeApi: LeetCodeApi;
     // 存储题目状态信息（从API获取）
     private questionStatusMap: Map<string, string | null> = new Map();
+    // 存储题目难度（从API获取：EASY/MEDIUM/HARD）
+    private questionDifficultyMap: Map<string, string> = new Map();
     private isLoaded: boolean = false;
 
     constructor(leetCodeApi: LeetCodeApi) {
@@ -29,6 +31,7 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
     refresh(): void {
         this.isLoaded = false;
         this.questionStatusMap.clear();
+        this.questionDifficultyMap.clear();
         this._onDidChangeTreeData.fire();
     }
 
@@ -56,7 +59,8 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
             const categoryQuestions = HOT_100_LIST.filter(q => q.category === element.category);
             return categoryQuestions.map(q => {
                 const status = this.questionStatusMap.get(q.frontendQuestionId) || null;
-                return new QuestionItem(q, status);
+                const difficulty = this.questionDifficultyMap.get(q.frontendQuestionId) || '';
+                return new QuestionItem(q, status, difficulty);
             });
         }
 
@@ -81,6 +85,9 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
                         q.frontendQuestionId,
                         raw === 'AC' ? 'ac' : raw === 'TRIED' ? 'notac' : null
                     );
+                    if (q.difficulty) {
+                        this.questionDifficultyMap.set(q.frontendQuestionId, q.difficulty);
+                    }
                 }
             }
         } catch (error) {
@@ -115,10 +122,13 @@ export class QuestionItem extends vscode.TreeItem {
 
     constructor(
         hot100Question: Hot100Question,
-        status: string | null
+        status: string | null,
+        difficulty: string = ''
     ) {
-        // 使用中文标题显示
-        const label = `[${hot100Question.frontendQuestionId}] ${hot100Question.titleCn}`;
+        // 列表接口返回大写难度枚举（EASY/MEDIUM/HARD），与详情接口区分大小写不同
+        const difficultyZh = difficulty === 'EASY' ? '简单' : difficulty === 'MEDIUM' ? '中等' : difficulty === 'HARD' ? '困难' : '';
+        // 难度与题号一起放在中括号里，如 [1 · 简单]
+        const label = `[${hot100Question.frontendQuestionId}${difficultyZh ? ' · ' + difficultyZh : ''}] ${hot100Question.titleCn}`;
         super(label, vscode.TreeItemCollapsibleState.None);
 
         // 构建Question对象
@@ -126,7 +136,7 @@ export class QuestionItem extends vscode.TreeItem {
             frontendQuestionId: hot100Question.frontendQuestionId,
             title: hot100Question.titleCn,
             titleSlug: hot100Question.titleSlug,
-            difficulty: '', // 从API获取时会更新
+            difficulty: difficulty,
             status: status
         };
 
