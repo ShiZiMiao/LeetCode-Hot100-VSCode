@@ -4,12 +4,24 @@
   "displayName": "LeetCode Hot 100 刷题助手",
   "description": "在 VS Code 中一站式刷 LeetCode Hot 100：题目浏览、官方/社区题解、多语言编码、在线测试提交与本地调试。Imzhou-tju/Hot100-for-VSCode 的修复 fork。",
   "version": "0.1.4",
+  "icon": "resources/leetcode.png",
   "engines": {
     "vscode": "^1.107.0"
   },
   "categories": [
     "Other"
   ],
+  "keywords": [
+    "leetcode",
+    "hot-100",
+    "algorithm",
+    "interview",
+    "刷题"
+  ],
+  "galleryBanner": {
+    "color": "#1A1A2E",
+    "theme": "dark"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",

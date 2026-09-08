@@ -1,7 +1,7 @@
 # LeetCode Hot 100 刷题助手
 
 <p align="center">
-  <img src="resources/leetcode.svg" width="128" height="128" alt="LeetCode Logo">
+  <img src="resources/leetcode.png" width="128" height="128" alt="LeetCode Logo">
 </p>
 
 <p align="center">
