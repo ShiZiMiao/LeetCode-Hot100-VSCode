@@ -173,7 +173,7 @@ class Hot100Provider implements vscode.TreeDataProvider<Question> {
 
 ```bash
 # 1. 克隆仓库
-git clone https://github.com/lao-mu-ji/Hot100-for-VSCode.git
+git clone https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode.git
 cd Hot100-for-VSCode
 
 # 2. 安装依赖

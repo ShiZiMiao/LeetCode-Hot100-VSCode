@@ -2,17 +2,22 @@
   "name": "leetcode",
   "publisher": "ShiZiMiao",
   "displayName": "LeetCode Hot 100 刷题助手",
-  "description": "在VSCode中刷LeetCode Hot 100题目",
-  "version": "0.1.3",
+  "description": "在 VS Code 中一站式刷 LeetCode Hot 100：题目浏览、官方/社区题解、多语言编码、在线测试提交与本地调试。Imzhou-tju/Hot100-for-VSCode 的修复 fork。",
+  "version": "0.1.4",
   "engines": {
     "vscode": "^1.107.0"
   },
   "categories": [
     "Other"
   ],
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode.git"
+  },
+  "homepage": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode",
+  "bugs": {
+    "url": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode/issues"
   },
   "activationEvents": [],
   "main": "./out/extension.js",
