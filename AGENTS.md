@@ -43,9 +43,10 @@ PATH="/c/Users/lecoo/AppData/Roaming/npm:$PATH" \
 
 ### 打包必备步骤
 
-1. **SVG 被 vsce 拦截**：`README.md` 中包含 `<img src="resources/leetcode.svg">`，vsce 会禁止打包。打包前需先从 README 移除该 SVG 图片块，打包后再恢复（用 `git checkout README.md` 恢复）。
-2. **`--no-dependencies` 必须加**：否则 vsce 内部会运行 `npm install` 做依赖检查，与 pnpm 的 `node_modules/.pnpm` 布局冲突，报大量 `missing` 错误。
-3. **`--skip-license` 需加**：项目 `LICENSE` 文件与 vsce 校验冲突时会拒绝打包。
+1. **`--no-dependencies` 必须加**：否则 vsce 内部会运行 `npm install` 做依赖检查，与 pnpm 的 `node_modules/.pnpm` 布局冲突，报大量 `missing` 错误。
+2. **`--skip-license` 需加**：项目 `LICENSE` 文件与 vsce 校验冲突时会拒绝打包。
+3. ~~打包前需删除 README 的 SVG 图片块~~：已修复，`README.md` 现在引用 `resources/leetcode.png`（Marketplace 不渲染 SVG），不再需要打包前的临时改动。
+4. 其他仓库根目录的临时文件（如 `__pycache__/`、`*.tmp_*.js`）会被 vsce 打进 VSIX，打包前确认 `git status` 只有预期的改动。
 
 打包后在本地安装测试：
 
@@ -60,6 +61,7 @@ code --install-extension "D:/code/lc/Hot100-for-VSCode/Hot100-for-VSCode.vsix" -
 - **git remote**：`origin` 指向 `ShiZiMiao/LeetCode-Hot100-VSCode`。发布用 `gh`（已登录 `ShiZiMiao`，repo 权限）。
 - **`.gitignore` 已忽略**：`out/`、`node_modules/`、`*.vsix`、`dist/`。VSIX 不应提交，走 GitHub Releases 资产。
 - **发布方式**：`gh release create v0.x.y --title "..." --notes "..." Hot100-for-VSCode.vsix`（仓库公开，资产可匿名下载）。
+- **Marketplace 自动同步**：`.github/workflows/publish-marketplace.yml` 在 GitHub Release 发布后自动打包并上传 VS Code Marketplace（`ShiZiMiao.leetcode`），无需手动上传。前置条件：仓库 Secret `VSCE_PAT`（注册 ShiZiMiao 发布者的微软账号生成的 Azure DevOps PAT，Scope 为 Marketplace → Manage）。注意：**GitHub Release 前必须先把 package.json 版本号提到对应版本**，Marketplace 同步的是 package.json 里的版本。
 
 ## 核心架构
 

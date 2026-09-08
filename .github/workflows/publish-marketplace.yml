@@ -1,0 +1,44 @@
+name: Publish Extension to VS Code Marketplace
+
+# 触发方式：
+# 1. GitHub Release 发布后自动执行（推荐，跟随发版习惯）
+# 2. 手动触发（Actions 页面 Run workflow）
+#
+# 前置要求：仓库 Secret（Settings → Secrets and variables → Actions）中配置
+#   VSCE_PAT：注册 ShiZiMiao 发布者的微软账号生成的 Azure DevOps PAT
+#   （Scope: Marketplace → Manage）
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # 与本地发布完全一致：--no-dependencies（pnpm 布局兼容）、--skip-license（LICENSE 校验冲突）
+      - name: Package VSIX
+        run: npx --yes @vscode/vsce@latest package --out Hot100-for-VSCode.vsix --no-dependencies --skip-license
+
+      # --packagePath 直接上传已打包产物，不会执行 npm version / git tag 等操作
+      - name: Publish to Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: npx --yes @vscode/vsce@latest publish --packagePath Hot100-for-VSCode.vsix
