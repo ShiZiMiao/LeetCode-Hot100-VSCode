@@ -39,6 +39,80 @@ function escapeHtml(text: string): string {
 		.replace(/"/g, '&quot;');
 }
 
+// 代码运行/提交错误以 VS Code 原生方式呈现：诊断（编辑器波浪线 + 问题面板），而非长文本弹窗
+const errorDiagnostics = vscode.languages.createDiagnosticCollection('leetcode');
+
+/**
+ * 把 LeetCode 运行/提交错误写入编辑器诊断，尽量定位到出错行。
+ * 返回解析出的行号（1-based），未解析到时返回 null。
+ */
+function showCodeError(fileUri: vscode.Uri, fullMessage: string): number | null {
+	// Python 格式: "Line 5 in groupAnagrams (Solution.py)"；Java/JS 格式: "Solution.java:5" 或 "Solution.js:5:9"
+	let lineNumber: number | null = null;
+	const pyMatch = fullMessage.match(/Line\s+(\d+)/i);
+	const colonMatch = fullMessage.match(/:(\d+)(?::\d+)?\s*\)?$/m);
+	if (pyMatch) {
+		lineNumber = parseInt(pyMatch[1], 10);
+	} else if (colonMatch) {
+		lineNumber = parseInt(colonMatch[1], 10);
+	}
+
+	const lineIdx = lineNumber && lineNumber >= 1 ? lineNumber - 1 : 0;
+	const diagnostic = new vscode.Diagnostic(
+		new vscode.Range(lineIdx, 0, lineIdx, 0),
+		fullMessage,
+		vscode.DiagnosticSeverity.Error
+	);
+	errorDiagnostics.set(fileUri, [diagnostic]);
+	return lineNumber;
+}
+
+/**
+ * 从题目 HTML（translatedContent/content）中按顺序提取各示例的期望输出。
+ * 示例格式：<pre>… 输入：… \n 输出：value \n 解释：… </pre>
+ */
+function extractExpectedOutputs(html: string): string[] {
+	if (!html) {
+		return [];
+	}
+	const entityMap: Record<string, string> = {
+		'&quot;': '"',
+		'&#34;': '"',
+		'&gt;': '>',
+		'&lt;': '<',
+		'&amp;': '&',
+		'&#39;': "'",
+		'&nbsp;': ' ',
+		'&thinsp;': ' ',
+		'&#160;': ' '
+	};
+	const outputs: string[] = [];
+	// 题面示例有两种排版：<pre> 块或 <div class="example-block"> + 段落；
+	// 剥离标签后按「示例 N / Example N」切段，段内取第一个「输出」的值，
+	// 值以 解释/输入/提示/Constraints 等为边界（有些示例没有解释，末尾会跟提示/进阶）
+	const text = html
+		.replace(/<br\s*\/?>/gi, '\n')
+		.replace(/<[^>]+>/g, ' ')
+		.replace(/&quot;|&#34;|&gt;|&lt;|&amp;|&#39;|&nbsp;|&thinsp;|&#160;/g, (m) => entityMap[m] ?? m);
+	const exampleRe = /(?:示例|Example)\s*\d/gi;
+	const segments: string[] = [];
+	let cursor = 0;
+	let exampleMatch: RegExpExecArray | null;
+	while ((exampleMatch = exampleRe.exec(text)) !== null) {
+		segments.push(text.slice(cursor, exampleMatch.index));
+		cursor = exampleRe.lastIndex;
+	}
+	segments.push(text.slice(cursor));
+	const valueRe = /(?:输出|Output)\s*[：:]\s*([\s\S]*?)(?=\s*(?:解释|Explanation|输入|Input|示例|Example|提示|Constraints|进阶|Follow-up|说明)\s*[：:]?|$)/i;
+	for (const segment of segments) {
+		const m = valueRe.exec(segment);
+		if (m && m[1].trim()) {
+			outputs.push(m[1].trim());
+		}
+	}
+	return outputs;
+}
+
 /**
  * 把 HTML 中的 http(s) 图片下载到本地缓存，并替换为 webview 可访问的 asWebviewUri，
  * 避免 webview 加载外部图片失败（如 assets.leetcode.com 等域名）。
@@ -492,6 +566,7 @@ export function activate(context: vscode.ExtensionContext) {
 	statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
 	statusBarItem.command = 'leetcode.login';
 	context.subscriptions.push(statusBarItem);
+	context.subscriptions.push(errorDiagnostics);
 	updateStatusBar(authManager);
 
 	// 监听登录状态变化
@@ -1165,6 +1240,14 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							th {
 								background: var(--vscode-tab-inactiveBackground);
 							}
+							.tab.refresh-tab {
+								margin-left: auto;
+								display: flex;
+								align-items: center;
+								gap: 4px;
+								font-size: 13px;
+								color: var(--vscode-descriptionForeground);
+							}
 						</style>
 <!-- 加载 KaTeX 用于数学公式渲染（可选增强，加载失败时公式保留原文） -->
 							<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
@@ -1173,11 +1256,12 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 							<!-- 视频播放资源（Aliplayer/hls.js，本地 vendor）在点击视频时按需加载，不进首屏 -->
 							<!-- 代码语法高亮由扩展端渲染时完成（vendored highlight.js），webview 仅需配色变量 -->
 					</head>
-					<body>
-						<div class="tabs">
-							<button class="tab ${activeTab === 'problem' ? 'active' : ''}" onclick="switchTab('problem')">📝 题目描述</button>
-							<button class="tab ${activeTab === 'solution' ? 'active' : ''}" onclick="switchTab('solution')">📖 题解</button>
-						</div>
+<body>
+							<div class="tabs">
+								<button class="tab ${activeTab === 'problem' ? 'active' : ''}" onclick="switchTab('problem')">📝 题目描述</button>
+								<button class="tab ${activeTab === 'solution' ? 'active' : ''}" onclick="switchTab('solution')">📖 题解</button>
+								<button class="tab refresh-tab" onclick="refreshCurrent()" title="刷新当前标签">🔄 刷新</button>
+							</div>
 						
 						<div class="content-wrapper">
 							<div id="problem-tab" class="${activeTab === 'problem' ? '' : 'hidden'}">
@@ -1198,6 +1282,7 @@ const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
 						<script>
 const vscode = acquireVsCodeApi();
 									let solutionLoaded = false;
+									let currentTab = '${activeTab}';
 									
 									// 代码主题判定：直接读代码块 pre 的准确背景（--vscode-textPreformat-background 已生效），
 									// 并把明/暗色板变量直接写入 :root 内联样式——不依赖选择器、属性或探针
@@ -1251,8 +1336,9 @@ document.documentElement.style.setProperty('--lc-built', vars.built);
 									})();
 
 								
-								function switchTab(tab) {
-								document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+function switchTab(tab) {
+									currentTab = tab;
+									document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
 								document.querySelector('.tab:nth-child(' + (tab === 'problem' ? '1' : '2') + ')').classList.add('active');
 								
 								document.getElementById('problem-tab').classList.toggle('hidden', tab !== 'problem');
@@ -1261,6 +1347,16 @@ document.documentElement.style.setProperty('--lc-built', vars.built);
 								if (tab === 'solution' && !solutionLoaded) {
 									solutionLoaded = true;
 									vscode.postMessage({ type: 'loadSolution' });
+								}
+							}
+
+							// 刷新当前活动标签：题目描述 → 重新拉取并重建；题解 → 重新加载题解
+							function refreshCurrent() {
+								if (currentTab === 'solution') {
+									document.getElementById('solution-tab').innerHTML = '<div class="loading">加载题解中...</div>';
+									vscode.postMessage({ type: 'loadSolution' });
+								} else {
+									vscode.postMessage({ type: 'reloadProblem' });
 								}
 							}
 							
@@ -1463,13 +1559,13 @@ function selectLangTab(btn) {
 				async function handlePanelMessage(message: any, panel: vscode.WebviewPanel, q: any) {
 					if (message.type === 'loadSolution') {
 						try {
-							// 获取官方题解
-							const officialData = await leetCodeApi.getOfficialSolution(q.titleSlug);
-							const officialSolution = officialData?.data?.question?.solution;
-
-							// 获取社区题解
-							const communityData = await leetCodeApi.getSolutionArticles(q.titleSlug, 0, 10);
-							const communityArticles = communityData?.data?.questionSolutionArticles?.edges || [];
+// 官方题解与社区题解列表并行拉取，避免串行叠加等待
+								const [officialData, communityData] = await Promise.all([
+									leetCodeApi.getOfficialSolution(q.titleSlug),
+									leetCodeApi.getSolutionArticles(q.titleSlug, 0, 10)
+								]);
+								const officialSolution = officialData?.data?.question?.solution;
+								const communityArticles = communityData?.data?.questionSolutionArticles?.edges || [];
 
 								let solutionHtml = '';
 
@@ -1579,12 +1675,26 @@ const officialArticleEdge = communityArticles.find((e: any) => e.node?.byLeetcod
 						} catch (error) {
 							panel.webview.html = generatePanelHtml('solution', `<div class="loading">加载题解失败: ${error}</div>`);
 						}
-					} else if (message.type === 'playVideo') {
-						try {
-							const uuid = typeof message.uuid === 'string' ? message.uuid.trim() : '';
-							if (!/^[0-9a-fA-F-]{20,40}$/.test(uuid)) {
-								throw new Error('无效的视频标识');
+} else if (message.type === 'reloadProblem') {
+							// 右键刷新题目描述：重新拉取题目内容（KaTeX/CDN 加载失败时重建页面即可恢复）
+							try {
+								const freshData = await leetCodeApi.getQuestionContent(q.titleSlug);
+								const fresh = freshData?.data?.question;
+								if (fresh) {
+									Object.assign(q, fresh);
+									questionContent = fresh.translatedContent || fresh.content;
+								}
+								panel.webview.html = generatePanelHtml('problem');
+							} catch (error) {
+								vscode.window.showErrorMessage(`刷新题目描述失败: ${error}`);
+								panel.webview.html = generatePanelHtml('problem');
 							}
+						} else if (message.type === 'playVideo') {
+							try {
+								const uuid = typeof message.uuid === 'string' ? message.uuid.trim() : '';
+								if (!/^[0-9a-fA-F-]{20,40}$/.test(uuid)) {
+									throw new Error('无效的视频标识');
+								}
 const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string; playAuth: string } | null } = { value: null };
 							await vscode.window.withProgress({
 								location: vscode.ProgressLocation.Notification,
@@ -1718,6 +1828,8 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 		// 保存文件
 		await editor.document.save();
 		const code = editor.document.getText();
+		// 重新运行时清除上一次的错误标注
+		errorDiagnostics.delete(editor.document.uri);
 
 		vscode.window.withProgress({
 			location: vscode.ProgressLocation.Notification,
@@ -1757,9 +1869,13 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 								);
 							}
 						} else {
-							vscode.window.showErrorMessage(
-								`运行错误\n${check.full_compile_error || check.full_runtime_error || check.status_msg}`
-							);
+							const errorText = check.full_compile_error || check.full_runtime_error || check.status_msg || '运行错误';
+							showCodeError(editor.document.uri, `运行错误\n${errorText}`);
+							vscode.window.showErrorMessage('运行错误（详见编辑器内错误标注）', '查看问题面板').then((selection) => {
+								if (selection === '查看问题面板') {
+									vscode.commands.executeCommand('workbench.actions.view.problems');
+								}
+							});
 						}
 						return;
 					}
@@ -1802,6 +1918,8 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 		// 保存文件
 		await editor.document.save();
 		const code = editor.document.getText();
+		// 重新提交时清除上一次的错误标注
+		errorDiagnostics.delete(editor.document.uri);
 
 		vscode.window.withProgress({
 			location: vscode.ProgressLocation.Notification,
@@ -1835,9 +1953,17 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 							// 刷新题目列表以更新状态
 							hot100Provider.refresh();
 						} else {
-							vscode.window.showErrorMessage(
-								`${check.status_msg}\n${check.full_compile_error || check.full_runtime_error || ''}`
-							);
+							const errorText = (check.full_compile_error || check.full_runtime_error || '').trim();
+							if (errorText) {
+								showCodeError(editor.document.uri, `${check.status_msg}\n${errorText}`);
+								vscode.window.showErrorMessage(`${check.status_msg || '提交失败'}（详见编辑器内错误标注）`, '查看问题面板').then((selection) => {
+									if (selection === '查看问题面板') {
+										vscode.commands.executeCommand('workbench.actions.view.problems');
+									}
+								});
+							} else {
+								vscode.window.showErrorMessage(check.status_msg || '提交失败');
+							}
 						}
 						return;
 					}
@@ -1870,13 +1996,25 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 		// 获取当前代码
 		const userCode = editor.document.getText();
 
-		// 生成调试文件
+		// 拉取题面以提取各示例的期望输出（本地运行/调试时逐示例比对）
+		let expectedOutputs: string[] = [];
+		try {
+			const questionData = await leetCodeApi.getQuestionContent(currentProblem.titleSlug);
+			const question = questionData?.data?.question;
+			expectedOutputs = extractExpectedOutputs(question?.translatedContent || question?.content || '');
+		} catch {
+			// 拿不到期望输出时仅运行不比对
+		}
+
+		// 生成调试文件（Python 为 importlib 驱动，其他语言为自包含模板；统一放入 debug/ 目录）
 		const debugFile = generateDebugFile(
 			currentProblem.lang,
 			currentProblem.questionId || '0',
 			currentProblem.titleSlug,
 			currentProblem.testCases || '',
-			userCode
+			userCode,
+			filePath,
+			expectedOutputs
 		);
 
 		if (!debugFile) {
@@ -1884,19 +2022,47 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 			return;
 		}
 
-		// 写入调试文件
-		const debugFilePath = `${dirPath}/${debugFile.fileName}`;
+		// 写入调试文件（debug/ 子目录，避免散落在题解文件旁）
+		const debugDir = path.join(dirPath, 'debug');
+		const debugFilePath = path.join(debugDir, debugFile.fileName);
 		const debugFileUri = vscode.Uri.file(debugFilePath);
 
 		try {
+			await vscode.workspace.fs.createDirectory(vscode.Uri.file(debugDir));
 			await vscode.workspace.fs.writeFile(debugFileUri, Buffer.from(debugFile.content, 'utf8'));
 
-			// 打开调试文件
+			// Python：直接启动 VS Code 原生调试会话（等价于"Python Debugger: Debug Python File"）。
+			// 驱动通过 importlib 加载题解代码文件，断点可以直接打在题解文件上，无需打开驱动文件
+			if (debugFile.fileName.endsWith('.py')) {
+				const pythonDebugger =
+					vscode.extensions.getExtension('ms-python.debugpy') ||
+					vscode.extensions.getExtension('ms-python.python');
+				if (!pythonDebugger) {
+					vscode.window.showWarningMessage(
+						'未检测到 Python 调试扩展，请先在扩展市场安装 "Python Debugger"（ms-python.debugpy）后重试'
+					);
+					return;
+				}
+				const started = await vscode.debug.startDebugging(vscode.workspace.workspaceFolders?.[0], {
+					type: 'python',
+					name: 'LeetCode Hot 100 本地调试',
+					request: 'launch',
+					program: debugFilePath,
+					cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? dirPath,
+					console: 'internalConsole'
+				});
+				if (!started) {
+					vscode.window.showErrorMessage('调试会话启动失败，请检查 Python 解释器是否已配置（Python 扩展插件）');
+				}
+				return;
+			}
+
+			// 打开调试文件（非 Python 语言的模板需要用户补充测试代码）
 			const doc = await vscode.workspace.openTextDocument(debugFileUri);
 			await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
 
 			vscode.window.showInformationMessage(
-				`调试文件已创建！\n运行方式: python ${debugFile.fileName}\n或直接按 F5 启动调试`
+				`调试文件已创建：debug/${debugFile.fileName}\n修改测试参数后按 F5/运行 执行`
 			);
 		} catch (error) {
 			vscode.window.showErrorMessage(`创建调试文件失败: ${error}`);
@@ -1922,7 +2088,43 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 		let runCommand: string | null = null;
 
 		if (filePath.endsWith('.py')) {
-			runCommand = `python "${filePath}"`;
+			const currentProblem = context.workspaceState.get<any>('currentProblem');
+			// 题解代码文件：生成并运行调试驱动（自动依赖注入 + 按签名解析用例）；
+			// 本身就是驱动文件（debug/xxx_debug.py）时直接运行
+			if (currentProblem && !fileName.endsWith('_debug.py')) {
+				// 拉取题面以提取各示例的期望输出（与调试入口一致，便于逐示例比对）
+				let expectedOutputs: string[] = [];
+				try {
+					const questionData = await leetCodeApi.getQuestionContent(currentProblem.titleSlug);
+					const question = questionData?.data?.question;
+					expectedOutputs = extractExpectedOutputs(question?.translatedContent || question?.content || '');
+				} catch {
+					// 拿不到期望输出时仅运行不比对
+				}
+				const debugDriver = generateDebugFile(
+					currentProblem.lang,
+					currentProblem.questionId || '0',
+					currentProblem.titleSlug,
+					currentProblem.testCases || '',
+					editor.document.getText(),
+					filePath,
+					expectedOutputs
+				);
+				if (debugDriver) {
+					const driverPath = path.join(fileDir, 'debug', debugDriver.fileName);
+					try {
+						await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.join(fileDir, 'debug')));
+						await vscode.workspace.fs.writeFile(vscode.Uri.file(driverPath), Buffer.from(debugDriver.content, 'utf8'));
+						runCommand = `python "${driverPath}"`;
+					} catch {
+						runCommand = `python "${filePath}"`;
+					}
+				} else {
+					runCommand = `python "${filePath}"`;
+				}
+			} else {
+				runCommand = `python "${filePath}"`;
+			}
 		} else if (filePath.endsWith('.js')) {
 			runCommand = `node "${filePath}"`;
 		} else if (filePath.endsWith('.ts')) {
@@ -1977,13 +2179,13 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 			cancellable: false
 		}, async () => {
 			try {
-				// 获取官方题解
-				const officialData = await leetCodeApi.getOfficialSolution(titleSlug);
-				const officialSolution = officialData?.data?.question?.solution;
-
-				// 获取社区题解
-				const communityData = await leetCodeApi.getSolutionArticles(titleSlug, 0, 10);
-				const communityArticles = communityData?.data?.questionSolutionArticles?.edges || [];
+// 官方题解与社区题解列表并行拉取，避免串行叠加等待
+					const [officialData, communityData] = await Promise.all([
+						leetCodeApi.getOfficialSolution(titleSlug),
+						leetCodeApi.getSolutionArticles(titleSlug, 0, 10)
+					]);
+					const officialSolution = officialData?.data?.question?.solution;
+					const communityArticles = communityData?.data?.questionSolutionArticles?.edges || [];
 
 				// 创建题解面板
 				const panel = vscode.window.createWebviewPanel(

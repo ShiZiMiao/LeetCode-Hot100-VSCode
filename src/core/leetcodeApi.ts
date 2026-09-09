@@ -50,7 +50,10 @@ export class LeetCodeApi {
                 path: path,
                 method: method,
                 headers: headers,
-                rejectUnauthorized: false // Bypass SSL checks for stability in proxy environments
+                rejectUnauthorized: false, // Bypass SSL checks for stability in proxy environments
+                // 代理/中间设备会静默切断空闲 keep-alive 连接，复用死连接会无限挂起；
+                // 每次新建连接（连接池关闭），配合超时兜底
+                agent: false
             };
 
             const req = https.request(options, (res) => {
@@ -71,6 +74,11 @@ export class LeetCodeApi {
 
             req.on('error', (e) => {
                 reject(e);
+            });
+
+            // 连接建立后若无响应（代理/网络挂起）会无限等待，超时销毁连接走 error 分支
+            req.setTimeout(20000, () => {
+                req.destroy(new Error(`请求超时: ${path}`));
             });
 
             if (data) {
@@ -170,7 +178,8 @@ export class LeetCodeApi {
                     path: u.pathname + u.search,
                     method: 'GET',
                     headers: { 'User-Agent': BROWSER_UA, 'Accept': '*/*' },
-                    rejectUnauthorized: false
+                    rejectUnauthorized: false,
+                    agent: false // 同 request()：避免复用被代理静默切断的空闲连接
                 },
                 (res) => {
                     let body = '';
@@ -185,6 +194,12 @@ export class LeetCodeApi {
                 }
             );
             req.on('error', reject);
+
+            // 同 request()：无响应时超时销毁，避免永久挂起
+            req.setTimeout(30000, () => {
+                req.destroy(new Error(`下载超时: ${u.hostname}${u.pathname}`));
+            });
+
             req.end();
         });
     }
@@ -200,7 +215,8 @@ export class LeetCodeApi {
                     path: u.pathname + u.search,
                     method: 'GET',
                     headers: { 'User-Agent': BROWSER_UA, 'Accept': '*/*' },
-                    rejectUnauthorized: false
+                    rejectUnauthorized: false,
+                    agent: false // 同 request()：避免复用被代理静默切断的空闲连接
                 },
                 (res) => {
                     if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
@@ -219,6 +235,12 @@ export class LeetCodeApi {
                 }
             );
             req.on('error', reject);
+
+            // 同 request()：无响应时超时销毁，避免永久挂起
+            req.setTimeout(30000, () => {
+                req.destroy(new Error(`下载超时: ${u.hostname}${u.pathname}`));
+            });
+
             req.end();
         });
     }
@@ -240,7 +262,8 @@ export class LeetCodeApi {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
                         'Accept': 'application/json'
                     },
-                    rejectUnauthorized: false
+                    rejectUnauthorized: false,
+                    agent: false // 同 request()：避免复用被代理静默切断的空闲连接
                 },
                 (res) => {
                     let body = '';
@@ -259,6 +282,12 @@ export class LeetCodeApi {
                 }
             );
             req.on('error', reject);
+
+            // 同 request()：无响应时超时销毁，避免永久挂起
+            req.setTimeout(30000, () => {
+                req.destroy(new Error(`下载超时: ${u.hostname}${u.pathname}`));
+            });
+
             req.end();
         });
     }

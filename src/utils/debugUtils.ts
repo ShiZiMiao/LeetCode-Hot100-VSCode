@@ -4,30 +4,78 @@
  */
 
 /**
- * 生成Python调试模板
+ * 生成 Python 本地调试驱动：不复制用户代码，通过 importlib 加载题解代码文件，
+ * 断点可直接打在题解代码文件上（帧指向真实文件路径）。
  */
-export function generatePythonDebugTemplate(
+/**
+ * 生成 Python 本地调试驱动：
+ * - 不复制用户代码，通过 importlib 加载题解代码文件（断点可直接打在题解文件上）
+ * - 自动注入 LeetCode 判题环境的常用依赖（typing/collections 等）与 ListNode/TreeNode
+ * - 按解法函数签名自动解析测试用例（任意参数个数），注解含 ListNode/TreeNode 时自动转换
+ */
+export function generatePythonDebugDriver(
     questionId: string,
     titleSlug: string,
     testCases: string,
-    codeSnippet: string
+    codeSnippet: string,
+    sourceFilePath: string,
+    expectedOutputs: string[] = []
 ): string {
-    // 提取函数名
-    const funcMatch = codeSnippet.match(/def\s+(\w+)\s*\(/);
+    // 提取函数名：跳过注释（snippet 里 ListNode/TreeNode 定义是注释掉的防引入），
+    // 并优先取 class Solution 之后的第一个 def（用户文件里可能写了辅助函数）
+    const codeNoComments = codeSnippet.replace(/^\s*#.*$/gm, '');
+    const classIdx = codeNoComments.indexOf('class Solution');
+    const funcBody = classIdx !== -1 ? codeNoComments.slice(classIdx) : codeNoComments;
+    const funcMatch = funcBody.match(/def\s+(\w+)\s*\(/);
     const funcName = funcMatch ? funcMatch[1] : 'solution';
+    // 统一正斜杠并转义双引号，保证 Windows 路径安全写入字符串字面量
+    const sourcePath = sourceFilePath.replace(/\\/g, '/').replace(/"/g, '\\"');
+
+    // 期望输出以 base64 内嵌，每项为 [是否可解析, 值]：
+    // 题面输出为非标准文本（如链表示例的 "Intersected at '8'"）时标为不可解析，驱动侧显示"未校验"
+    const expectedMeta = expectedOutputs.map((v) => {
+        try {
+            return [1, JSON.parse(v)];
+        } catch {
+            return [0, v];
+        }
+    });
+    const expectedB64 = Buffer.from(JSON.stringify(expectedMeta), 'utf8').toString('base64');
+
+    // 特殊判题题：设计类（操作序列格式）、160（校验参数 intersectVal 在最前）、
+    // 138（Node 带 random 指针，本地 ListNode 无法等价还原），无法通用运行官方示例
+    const isSpecialProblem = [
+        'lru-cache',
+        'min-stack',
+        'implement-trie-prefix-tree',
+        'find-median-from-data-stream',
+        'intersection-of-two-linked-lists',
+        'copy-list-with-random-pointer'
+    ].includes(titleSlug);
 
     return `# ============================================
-# LeetCode ${questionId}. ${titleSlug} - 本地调试文件
-# 运行方式: python ${questionId}_${titleSlug}_debug.py
+# LeetCode ${questionId}. ${titleSlug} - 本地调试驱动
+# 通过 importlib 加载题解代码文件（不复制代码，断点可直接打在题解文件上）
+# 自动注入判题环境依赖（typing/collections 等）与 ListNode/TreeNode
+# 按解法签名自动解析参数；注解为 ListNode/TreeNode 时自动转换
+# 源码文件: ${sourcePath}
 # ============================================
 
-from typing import List, Optional
-from collections import deque, defaultdict
-import heapq
 import json
+import base64
+import importlib.util
+import inspect
+import sys
+from typing import List, Optional, Dict, Set, Tuple, Any
+from collections import deque, defaultdict, Counter, OrderedDict
+import heapq
+import itertools
+import functools
+import math
+import bisect
 
 # ============================================
-# 常用数据结构定义
+# 常用数据结构定义（LeetCode 判题环境默认提供，本地等价还原）
 # ============================================
 
 class ListNode:
@@ -35,7 +83,7 @@ class ListNode:
     def __init__(self, val=0, next=None):
         self.val = val
         self.next = next
-    
+
     @staticmethod
     def from_list(arr):
         if not arr:
@@ -46,7 +94,7 @@ class ListNode:
             curr.next = ListNode(val)
             curr = curr.next
         return head
-    
+
     def to_list(self):
         result = []
         curr = self
@@ -61,7 +109,7 @@ class TreeNode:
         self.val = val
         self.left = left
         self.right = right
-    
+
     @staticmethod
     def from_list(arr):
         if not arr or arr[0] is None:
@@ -81,58 +129,169 @@ class TreeNode:
             i += 1
         return root
 
+    def to_list(self):
+        if self is None:
+            return []
+        result = []
+        queue = deque([self])
+        while queue:
+            node = queue.popleft()
+            if node is None:
+                result.append(None)
+                continue
+            result.append(node.val)
+            queue.append(node.left)
+            queue.append(node.right)
+        while result and result[-1] is None:
+            result.pop()
+        return result
+
 # ============================================
-# 你的解题代码
+# 加载题解代码文件中的 Solution（注入判题环境依赖）
 # ============================================
 
-${codeSnippet}
+spec = importlib.util.spec_from_file_location("lc_solution", "${sourcePath}")
+module = importlib.util.module_from_spec(spec)
+sys.modules["lc_solution"] = module
+# LeetCode 判题环境的全局默认：常用类型/集合 + ListNode/TreeNode，注入避免本地 NameError
+module.__dict__.update({
+    "List": List, "Optional": Optional, "Dict": Dict, "Set": Set, "Tuple": Tuple, "Any": Any,
+    "deque": deque, "defaultdict": defaultdict, "Counter": Counter, "OrderedDict": OrderedDict,
+    "heapq": heapq, "itertools": itertools, "functools": functools, "math": math, "bisect": bisect,
+    "json": json,
+    "ListNode": ListNode, "TreeNode": TreeNode,
+})
+spec.loader.exec_module(module)
+
+Solution = module.Solution
 
 # ============================================
 # 测试运行
 # ============================================
 
+def _canonical(v):
+    """嵌套列表排序规范化（比较时忽略顺序），叶子用 repr 排序避免类型不可比"""
+    if isinstance(v, (list, tuple)):
+        return tuple(sorted((_canonical(x) for x in v), key=repr))
+    return v
+
+
+def same_value(actual, expected):
+    """结果与期望比对：先严格相等；对顺序无关的输出（嵌套列表或纯字符串列表，
+    如字母异位词分组/全排列/子集/括号生成等，LC 本体也按顺序无关判定）做排序规范化比对"""
+    if actual == expected:
+        return True
+    if isinstance(actual, list) and isinstance(expected, list):
+        nested = (bool(actual) and all(isinstance(x, (list, tuple)) for x in actual)
+                  and bool(expected) and all(isinstance(x, (list, tuple)) for x in expected))
+        flat_strings = all(isinstance(x, str) for x in actual) and all(isinstance(x, str) for x in expected)
+        if nested or flat_strings:
+            return _canonical(actual) == _canonical(expected)
+    return False
+
+
 if __name__ == "__main__":
     solution = Solution()
-    
-    # LeetCode 测试用例
+
+    # LeetCode 测试用例（每行一个 JSON 值；带 "名称 = " 前缀时自动剥离）
     test_cases = """${testCases}"""
-    
+
     print("=" * 50)
     print("开始本地调试")
     print("=" * 50)
-    
+
     lines = [line.strip() for line in test_cases.strip().split('\\n') if line.strip()]
-    
-    if len(lines) >= 1:
-        try:
-            param1 = json.loads(lines[0])
-            param2 = json.loads(lines[1]) if len(lines) > 1 else None
-            
-            print(f"输入参数1: {param1}")
-            if param2 is not None:
-                print(f"输入参数2: {param2}")
-            
-            # 调用解法 (根据题目修改参数)
-            if param2 is not None:
-                result = solution.${funcName}(param1, param2)
+
+    try:
+        # 期望输出（来自题面示例，逐示例比对）；base64 内嵌避免引号/换行破坏驱动
+        expected_meta = json.loads(base64.b64decode("${expectedB64}"))
+
+        # 特殊判题题（设计类操作序列 / 校验参数在最前排布）无法通用运行官方示例
+        if ${isSpecialProblem ? 'True' : 'False'}:
+            print("⚠️ 该题为特殊判题题（设计类操作序列或自定义校验参数），无法通用运行官方示例")
+            print("   请在文件末尾的自定义调用区手动构造用例")
+        elif lines:
+            values = []
+            for line in lines:
+                if "=" in line and not line.lstrip().startswith(("[", "{", '"', "'")):
+                    line = line.split("=", 1)[1].strip()
+                values.append(json.loads(line))
+
+            func = solution.${funcName}
+
+            def convert(value, annotation):
+                """按注解把普通列表转换为 ListNode/TreeNode（判题环境默认类型）"""
+                if "ListNode" in annotation:
+                    if isinstance(value, list) and value and isinstance(value[0], list):
+                        return [ListNode.from_list(v) for v in value]
+                    return ListNode.from_list(value)
+                if "TreeNode" in annotation:
+                    return TreeNode.from_list(value)
+                return value
+
+            def run_and_compare(args, idx):
+                """运行一个示例并比对期望输出；返回 (是否通过, 是否已校验)"""
+                try:
+                    print(f"示例{idx + 1} 输入: {args}")
+                    result = func(*args)
+                    type_name = type(result).__name__
+                    if "ListNode" in type_name and hasattr(result, "to_list"):
+                        result = result.to_list()
+                    elif "TreeNode" in type_name and hasattr(result, "to_list"):
+                        result = result.to_list()
+                    print(f"示例{idx + 1} 输出: {result}")
+                    if idx < len(expected_meta):
+                        meta_ok, exp = expected_meta[idx]
+                        if not meta_ok:
+                            print(f"示例{idx + 1} ⚠️ 未校验（题面输出为非标准文本）")
+                            return False, False
+                        if same_value(result, exp):
+                            note = "（顺序无关，仅顺序不同）" if result != exp else ""
+                            print(f"示例{idx + 1} ✅ 通过{note}")
+                            return True, True
+                        print(f"示例{idx + 1} ❌ 不通过（期望: {exp}）")
+                        return False, True
+                    print(f"示例{idx + 1} ⚠️ 未校验（无期望输出）")
+                    return False, False
+                except Exception as ex:
+                    print(f"示例{idx + 1} 运行出错: {ex}")
+                    return False, False
+
+            sig_params = list(inspect.signature(func).parameters.values())
+            n = len(sig_params)
+            ex_count = len(expected_meta)
+            groups = None
+            if n > 0 and ex_count > 0 and len(values) % ex_count == 0:
+                per = len(values) // ex_count
+                if per >= n:
+                    # 按题面示例数分组：每组前 n 个值作为入参（兼容带校验参数的题，如环形链表的 pos）
+                    groups = [[v for v in values[i * per:(i + 1) * per][:n]] for i in range(ex_count)]
+            if groups is None and n > 0 and len(values) % n == 0:
+                groups = [values[i:i + n] for i in range(0, len(values), n)]
+            if groups is None:
+                groups = [values]
+
+            total = passed = unchecked = 0
+            for idx, args in enumerate(groups):
+                total += 1
+                ok_p, ok_c = run_and_compare(args, idx)
+                passed += 1 if ok_p else 0
+                unchecked += 1 if not ok_c else 0
+
+            if expected_meta:
+                sign = "✅ 全部通过" if passed == total else "❌ 有失败"
+                extra = f"，{unchecked} 个未校验" if unchecked else ""
+                print(f"===== {sign}：通过 {passed}/{total}{extra} =====")
             else:
-                result = solution.${funcName}(param1)
-            
-            print(f"输出结果: {result}")
-            
-        except Exception as e:
-            print(f"运行出错: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    # ============================================
-    # 自定义测试用例
-    # ============================================
-    # result = solution.${funcName}([2, 7, 11, 15], 9)
-    # print(f"自定义测试: {result}")
+                print(f"===== 共运行 {total} 个示例（未获取到期望输出，无比对） =====")
+        else:
+            print("未读取到测试用例，请在驱动文件里自定义调用")
+    except Exception as e:
+        print(f"运行出错: {e}")
+        import traceback
+        traceback.print_exc()
 `;
 }
-
 /**
  * 生成Java调试模板
  */
@@ -841,14 +1000,16 @@ export function generateDebugFile(
     questionId: string,
     titleSlug: string,
     testCases: string,
-    codeSnippet: string
+    codeSnippet: string,
+    sourceFilePath: string,
+    expectedOutputs: string[] = []
 ): { fileName: string; content: string } | null {
     switch (lang) {
         case 'python3':
         case 'python':
             return {
                 fileName: `${questionId}_${titleSlug}_debug.py`,
-                content: generatePythonDebugTemplate(questionId, titleSlug, testCases, codeSnippet)
+                content: generatePythonDebugDriver(questionId, titleSlug, testCases, codeSnippet, sourceFilePath, expectedOutputs)
             };
 
         case 'java':
