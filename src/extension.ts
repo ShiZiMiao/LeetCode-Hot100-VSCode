@@ -50,7 +50,9 @@ function showCodeError(fileUri: vscode.Uri, fullMessage: string): number | null 
 	// Python 格式: "Line 5 in groupAnagrams (Solution.py)"；Java/JS 格式: "Solution.java:5" 或 "Solution.js:5:9"
 	let lineNumber: number | null = null;
 	const pyMatch = fullMessage.match(/Line\s+(\d+)/i);
-	const colonMatch = fullMessage.match(/:(\d+)(?::\d+)?\s*\)?$/m);
+	// C++/Java/JS 等文件名:行号[:列] 格式；行号后可能跟 "error:" 等后缀（如 main.cpp:3:5: error:），
+	// 不再要求匹配到行尾
+	const colonMatch = fullMessage.match(/:(\d+)(?::\d+)?(?=\s|:|\)|$)/m);
 	if (pyMatch) {
 		lineNumber = parseInt(pyMatch[1], 10);
 	} else if (colonMatch) {
@@ -65,6 +67,52 @@ function showCodeError(fileUri: vscode.Uri, fullMessage: string): number | null 
 	);
 	errorDiagnostics.set(fileUri, [diagnostic]);
 	return lineNumber;
+}
+
+/**
+ * 以正在编辑的文件为准解析题目身份：扩展生成的题解文件名为 {题号}_{slug}.{ext}，
+ * 调试驱动为 {题号}_{slug}_debug.{ext}。workspaceState 里的 currentProblem 只在
+ * "打开题目"流程完整走完（选语言、建文件）后更新——语言选择被取消、窗口重启等
+ * 场景会残留上一题状态，导致运行/调试/提交落到错误题目。文件名解析失败或与
+ * currentProblem 一致时原样返回（零行为变化）；不一致时按文件名重新拉取题面，
+ * 并同步更新 currentProblem，保证后续操作一致。
+ */
+async function resolveProblemFromFile(
+	api: LeetCodeApi,
+	context: vscode.ExtensionContext,
+	fileName: string,
+	currentProblem: any
+): Promise<any> {
+	if (!currentProblem) {
+		return currentProblem;
+	}
+	const m = fileName.match(/^(\d+)_([a-z0-9-]+?)(?:_debug)?\./i);
+	if (!m || m[2] === currentProblem.titleSlug) {
+		return currentProblem;
+	}
+	try {
+		const data = await api.getQuestionContent(m[2]);
+		const q = data?.data?.question;
+		if (!q) {
+			return currentProblem;
+		}
+		const langMap: Record<string, string> = {
+			py: 'python', js: 'javascript', ts: 'typescript', java: 'java',
+			cpp: 'cpp', c: 'c', go: 'golang', rs: 'rust'
+		};
+		const extMatch = fileName.match(/\.([a-z]+)$/i);
+		const ext = extMatch ? extMatch[1].toLowerCase() : '';
+		const problem = {
+			titleSlug: q.titleSlug || m[2],
+			questionId: q.questionId,
+			lang: langMap[ext] || currentProblem.lang,
+			testCases: q.exampleTestcases || q.sampleTestCase || currentProblem.testCases || ''
+		};
+		context.workspaceState.update('currentProblem', problem);
+		return problem;
+	} catch {
+		return currentProblem;
+	}
 }
 
 /**
@@ -795,13 +843,30 @@ export function activate(context: vscode.ExtensionContext) {
 				}
 				const workspaceFolder = workspaceFolders[0].uri.fsPath;
 
-				// 让用户选择编程语言
-				const selectedLanguage = await selectLanguage(q.codeSnippets);
-				if (!selectedLanguage) {
-					return; // 用户取消了选择
+				// 已存在题解文件（如 1_two-sum.py）时跳过语言选择器，直接按已有的文件继续；
+				// 没有任何语言的文件时才让用户选语言（首次做题）
+				const preferredLangs = ['python3', 'java', 'cpp', 'javascript', 'typescript', 'go', 'rust', 'c'];
+				let langSlug: string | null = null;
+				let snippetCode = '';
+				for (const lang of preferredLangs) {
+					const candidate = vscode.Uri.file(`${workspaceFolder}/leetcode/${q.questionFrontendId}_${q.titleSlug}.${getExtension(lang)}`);
+					try {
+						await vscode.workspace.fs.stat(candidate);
+						langSlug = lang;
+						break;
+					} catch {
+						// 该语言的文件不存在，检查下一种
+					}
+				}
+				if (langSlug === null) {
+					const selectedLanguage = await selectLanguage(q.codeSnippets);
+					if (!selectedLanguage) {
+						return; // 用户取消了选择
+					}
+					langSlug = selectedLanguage.langSlug;
+					snippetCode = selectedLanguage.code;
 				}
 
-				const langSlug = selectedLanguage.langSlug;
 				const ext = getExtension(langSlug);
 
 				// 构建代码文件路径
@@ -827,7 +892,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 				// 如果文件不存在，创建并写入模板代码
 				if (!fileExists) {
-					const content = Buffer.from(selectedLanguage.code, 'utf8');
+					const content = Buffer.from(snippetCode, 'utf8');
 					await vscode.workspace.fs.writeFile(fileUri, content);
 				}
 
@@ -1825,6 +1890,9 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 			return;
 		}
 
+		// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态导致测试错题
+		const problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
+
 		// 保存文件
 		await editor.document.save();
 		const code = editor.document.getText();
@@ -1838,11 +1906,11 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 		}, async () => {
 			try {
 				const result = await leetCodeApi.runCode(
-					currentProblem.titleSlug,
-					currentProblem.questionId,
-					currentProblem.lang,
+					problem.titleSlug,
+					problem.questionId,
+					problem.lang,
 					code,
-					currentProblem.testCases || ''
+					problem.testCases || ''
 				);
 
 				const interpretId = result.interpret_id;
@@ -1915,6 +1983,9 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 			return;
 		}
 
+		// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态导致提交错题
+		const problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
+
 		// 保存文件
 		await editor.document.save();
 		const code = editor.document.getText();
@@ -1928,9 +1999,9 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 		}, async () => {
 			try {
 				const result = await leetCodeApi.submitCode(
-					currentProblem.titleSlug,
-					currentProblem.questionId,
-					currentProblem.lang,
+					problem.titleSlug,
+					problem.questionId,
+					problem.lang,
 					code
 				);
 
@@ -1992,6 +2063,10 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 
 		const filePath = editor.document.uri.fsPath;
 		const dirPath = filePath.substring(0, filePath.lastIndexOf('\\') !== -1 ? filePath.lastIndexOf('\\') : filePath.lastIndexOf('/'));
+		const fileName = path.basename(filePath);
+
+		// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态导致驱动错题
+		const problem = await resolveProblemFromFile(leetCodeApi, context, fileName, currentProblem);
 
 		// 获取当前代码
 		const userCode = editor.document.getText();
@@ -1999,7 +2074,7 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 		// 拉取题面以提取各示例的期望输出（本地运行/调试时逐示例比对）
 		let expectedOutputs: string[] = [];
 		try {
-			const questionData = await leetCodeApi.getQuestionContent(currentProblem.titleSlug);
+			const questionData = await leetCodeApi.getQuestionContent(problem.titleSlug);
 			const question = questionData?.data?.question;
 			expectedOutputs = extractExpectedOutputs(question?.translatedContent || question?.content || '');
 		} catch {
@@ -2008,17 +2083,17 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 
 		// 生成调试文件（Python 为 importlib 驱动，其他语言为自包含模板；统一放入 debug/ 目录）
 		const debugFile = generateDebugFile(
-			currentProblem.lang,
-			currentProblem.questionId || '0',
-			currentProblem.titleSlug,
-			currentProblem.testCases || '',
+			problem.lang,
+			problem.questionId || '0',
+			problem.titleSlug,
+			problem.testCases || '',
 			userCode,
 			filePath,
 			expectedOutputs
 		);
 
 		if (!debugFile) {
-			vscode.window.showWarningMessage(`暂不支持 ${currentProblem.lang} 的本地调试，目前仅支持 Python`);
+			vscode.window.showWarningMessage(`暂不支持 ${problem.lang} 的本地调试，目前仅支持 Python`);
 			return;
 		}
 
@@ -2092,20 +2167,22 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 			// 题解代码文件：生成并运行调试驱动（自动依赖注入 + 按签名解析用例）；
 			// 本身就是驱动文件（debug/xxx_debug.py）时直接运行
 			if (currentProblem && !fileName.endsWith('_debug.py')) {
+				// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态
+				const problem = await resolveProblemFromFile(leetCodeApi, context, fileName, currentProblem);
 				// 拉取题面以提取各示例的期望输出（与调试入口一致，便于逐示例比对）
 				let expectedOutputs: string[] = [];
 				try {
-					const questionData = await leetCodeApi.getQuestionContent(currentProblem.titleSlug);
+					const questionData = await leetCodeApi.getQuestionContent(problem.titleSlug);
 					const question = questionData?.data?.question;
 					expectedOutputs = extractExpectedOutputs(question?.translatedContent || question?.content || '');
 				} catch {
 					// 拿不到期望输出时仅运行不比对
 				}
 				const debugDriver = generateDebugFile(
-					currentProblem.lang,
-					currentProblem.questionId || '0',
-					currentProblem.titleSlug,
-					currentProblem.testCases || '',
+					problem.lang,
+					problem.questionId || '0',
+					problem.titleSlug,
+					problem.testCases || '',
 					editor.document.getText(),
 					filePath,
 					expectedOutputs
@@ -2171,7 +2248,10 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 			return;
 		}
 
-		const titleSlug = currentProblem.titleSlug;
+		// 以当前编辑的文件为准解析题目（与运行/调试/测试/提交同一套防错题逻辑）
+		const activeFileName = path.basename(vscode.window.activeTextEditor?.document.uri.fsPath || '');
+		const problem = await resolveProblemFromFile(leetCodeApi, context, activeFileName, currentProblem);
+		const titleSlug = problem.titleSlug;
 
 		vscode.window.withProgress({
 			location: vscode.ProgressLocation.Notification,

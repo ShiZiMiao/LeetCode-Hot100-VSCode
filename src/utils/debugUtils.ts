@@ -176,12 +176,28 @@ def _canonical(v):
     return v
 
 
+def _normalize(v):
+    """递归归一化：tuple→list（LC 判题按 JSON 序列化比较，tuple 与 list 等价，
+    如 twoSum 返回 (0, 1) 同样判定通过；对于 int/float 数值相等也可直接比较）"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (list, tuple)):
+        return [_normalize(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _normalize(val) for k, val in v.items()}
+    return v
+
+
 def same_value(actual, expected):
-    """结果与期望比对：先严格相等；对顺序无关的输出（嵌套列表或纯字符串列表，
-    如字母异位词分组/全排列/子集/括号生成等，LC 本体也按顺序无关判定）做排序规范化比对"""
-    if actual == expected:
+    """结果与期望比对：先按 LC 判题语义（tuple/list 等价、int/float 数值相等）比较；
+    再对顺序无关的输出（嵌套列表或纯字符串列表，如字母异位词分组/全排列/子集/
+    括号生成等，LC 本体也按顺序无关判定）做排序规范化比对"""
+    # bool 与 int/float 不可互换：Python 中 True == 1，但判题语义区分（期望 true 与 1 不同）
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        return type(actual) is type(expected) and actual == expected
+    if _normalize(actual) == _normalize(expected):
         return True
-    if isinstance(actual, list) and isinstance(expected, list):
+    if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
         nested = (bool(actual) and all(isinstance(x, (list, tuple)) for x in actual)
                   and bool(expected) and all(isinstance(x, (list, tuple)) for x in expected))
         flat_strings = all(isinstance(x, str) for x in actual) and all(isinstance(x, str) for x in expected)
