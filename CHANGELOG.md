@@ -2,6 +2,10 @@
 
 All notable changes to the "leetcode" extension will be documented in this file.
 
+## 0.1.7
+
+- **本地调试环境与判题机对齐**：按 LeetCode 判题机 `globals()` 实测重建驱动预导入——星导入 `string/re/collections/heapq/bisect/copy/math/random/statistics/itertools/functools/operator/io/sys/json`（含 Counter/defaultdict/lru_cache/inf 等散名），`time/os` 仅模块名，`datetime` 模块 + 常用类，`typing` 最后导入；`sortedcontainers` 本地未安装时自动以 bisect 兜底；补齐 LC 定制的 `heappush_max` 系列大顶堆函数；修复解法中直接引用 `collections.defaultdict` 等模块名时报 NameError 的问题（官方有而本地此前未注入）；移除官方不存在的 `queue`
+
 ## 0.1.6
 
 - **修复错题状态残留**：运行/调试/测试/提交/查看题解此前以全局记录的"当前题"为准，打开新题但流程未完整走完（如语言选择被取消、窗口重启）时会用到上一题状态，导致运行/提交错题。现全部改为**以实际编辑的文件为准**（文件名 `{题号}_{slug}.{ext}`），状态不一致时自动按文件重新拉取题面并同步
