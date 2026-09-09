@@ -56,7 +56,7 @@ export function generatePythonDebugDriver(
     return `# ============================================
 # LeetCode ${questionId}. ${titleSlug} - 本地调试驱动
 # 通过 importlib 加载题解代码文件（不复制代码，断点可直接打在题解文件上）
-# 自动注入判题环境依赖（typing/collections 等）与 ListNode/TreeNode
+# 自动注入判题环境依赖（按 2026-09 判题机 globals() 实测对齐）与 ListNode/TreeNode
 # 按解法签名自动解析参数；注解为 ListNode/TreeNode 时自动转换
 # 源码文件: ${sourcePath}
 # ============================================
@@ -66,13 +66,24 @@ import base64
 import importlib.util
 import inspect
 import sys
-from typing import List, Optional, Dict, Set, Tuple, Any
-from collections import deque, defaultdict, Counter, OrderedDict
+import os
+import io
+import collections
 import heapq
 import itertools
 import functools
 import math
 import bisect
+import string
+import re
+import copy
+import time
+import random
+import statistics
+import operator
+import datetime
+import typing
+from collections import deque
 
 # ============================================
 # 常用数据结构定义（LeetCode 判题环境默认提供，本地等价还原）
@@ -153,14 +164,113 @@ class TreeNode:
 spec = importlib.util.spec_from_file_location("lc_solution", "${sourcePath}")
 module = importlib.util.module_from_spec(spec)
 sys.modules["lc_solution"] = module
-# LeetCode 判题环境的全局默认：常用类型/集合 + ListNode/TreeNode，注入避免本地 NameError
-module.__dict__.update({
-    "List": List, "Optional": Optional, "Dict": Dict, "Set": Set, "Tuple": Tuple, "Any": Any,
-    "deque": deque, "defaultdict": defaultdict, "Counter": Counter, "OrderedDict": OrderedDict,
-    "heapq": heapq, "itertools": itertools, "functools": functools, "math": math, "bisect": bisect,
-    "json": json,
-    "ListNode": ListNode, "TreeNode": TreeNode,
-})
+# 与 LeetCode 判题环境一致的全局预导入（2026-09 实测判题机 globals() 对齐）。
+# 复测探针：题面编辑器粘贴 class Solution 内 print(sorted(globals())) 运行即可。
+def _lc_star(mod):
+    names = getattr(mod, '__all__', None)
+    if names is None:
+        names = [n for n in dir(mod) if not n.startswith('_')]
+    d = {}
+    for n in names:
+        try:
+            d[n] = getattr(mod, n)
+        except Exception:
+            pass
+    return d
+
+_PRELUDE = {}
+# 星导入模块（模块名 + 全部公开成员都在判题全局）
+for _m in [string, re, collections, heapq, bisect, copy, math, random, statistics, itertools, functools, operator, io, sys, json]:
+    _PRELUDE.update(_lc_star(_m))
+    _PRELUDE[_m.__name__] = _m
+# 仅模块名：time/os；datetime 另显式导入常用类（判题机 datetime 名字本身是模块）
+_PRELUDE['time'] = time
+_PRELUDE['os'] = os
+_PRELUDE['datetime'] = datetime
+for _n in ('date', 'timedelta', 'timezone', 'tzinfo', 'MINYEAR', 'MAXYEAR', 'UTC'):
+    _PRELUDE[_n] = getattr(datetime, _n, None)
+# sortedcontainers：判题机预装；本地未安装时用 bisect 兜底实现常见接口（调试够用）
+try:
+    import sortedcontainers
+    _PRELUDE.update(_lc_star(sortedcontainers))
+    _PRELUDE['sortedcontainers'] = sortedcontainers
+except ImportError:
+    class SortedList:
+        def __init__(self, iterable=None):
+            self._items = sorted(iterable) if iterable else []
+        def add(self, value):
+            bisect.insort_right(self._items, value)
+        def update(self, iterable):
+            for value in iterable:
+                self.add(value)
+        def discard(self, value):
+            try:
+                self.remove(value)
+            except ValueError:
+                pass
+        def remove(self, value):
+            i = bisect.bisect_left(self._items, value)
+            if i == len(self._items) or self._items[i] != value:
+                raise ValueError('%r not found in SortedList' % (value,))
+            self._items.pop(i)
+        def pop(self, index=-1):
+            return self._items.pop(index)
+        def count(self, value):
+            return self._items.count(value)
+        def index(self, value, start=0, stop=None):
+            return self._items.index(value, start, len(self._items) if stop is None else stop)
+        def irange(self, minimum=None, maximum=None, inclusive=(True, True)):
+            lo = -math.inf if minimum is None else minimum
+            hi = math.inf if maximum is None else maximum
+            left, right = inclusive
+            return iter([x for x in self._items
+                         if (x >= lo if left else x > lo) and (x <= hi if right else x < hi)])
+        def islice(self, start=0, end=None):
+            return iter(self._items[start:end])
+        def __len__(self):
+            return len(self._items)
+        def __iter__(self):
+            return iter(self._items)
+        def __contains__(self, value):
+            return value in self._items
+        def __getitem__(self, index):
+            if isinstance(index, slice):
+                return SortedList(self._items[index])
+            return self._items[index]
+        def __repr__(self):
+            return 'SortedList(%r)' % (self._items,)
+    _PRELUDE['SortedList'] = SortedList
+# typing 星导入放最后：与判题机一致（typing 的 Pattern/Match 会覆盖 re 的同名符号）
+_PRELUDE.update(_lc_star(typing))
+# LeetCode 在 stdlib heapq 上补充的 max-heap 变体，用 CPython 私有函数等价还原
+try:
+    heapq._siftdown_max, heapq._heappop_max, heapq._heapify_max, heapq._heapreplace_max, heapq._siftup_max
+    def heappush_max(heap, item):
+        heap.append(item)
+        heapq._siftdown_max(heap, 0, len(heap) - 1)
+    def heappop_max(heap):
+        return heapq._heappop_max(heap)
+    def heapify_max(heap):
+        heapq._heapify_max(heap)
+    def heapreplace_max(heap, item):
+        return heapq._heapreplace_max(heap, item)
+    def heappushpop_max(heap, item):
+        # 大顶堆：item 比当前最大值大则 item 直接作为结果弹出
+        if not heap or heap[0] < item:
+            return item
+        ret = heap[0]
+        heap[0] = item
+        heapq._siftup_max(heap, 0)
+        return ret
+    _PRELUDE.update({
+        'heappush_max': heappush_max, 'heappop_max': heappop_max, 'heapify_max': heapify_max,
+        'heapreplace_max': heapreplace_max, 'heappushpop_max': heappushpop_max,
+    })
+except AttributeError:
+    pass
+# 本地版 ListNode/TreeNode 最后覆盖（带 from_list/to_list，供入参转换与结果比对）
+module.__dict__.update(_PRELUDE)
+module.__dict__.update({"ListNode": ListNode, "TreeNode": TreeNode})
 spec.loader.exec_module(module)
 
 Solution = module.Solution
