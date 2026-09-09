@@ -4,9 +4,10 @@ name: Publish Extension to VS Code Marketplace
 # 1. GitHub Release 发布后自动执行（推荐，跟随发版习惯）
 # 2. 手动触发（Actions 页面 Run workflow）
 #
-# 前置要求：仓库 Secret（Settings → Secrets and variables → Actions）中配置
-#   VSCE_PAT：注册 ShiZiMiao 发布者的微软账号生成的 Azure DevOps PAT
-#   （Scope: Marketplace → Manage）
+# 认证方式：OIDC 可信发布（无需 PAT / Azure DevOps）。
+# 前置要求：在 https://marketplace.visualstudio.com/manage 的发布者设置中
+#   为 ShiZiMiao.leetcode 配置 Trusted Publishing 信任策略，
+#   关联本仓库与工作流 publish-marketplace.yml（GitHub Actions 为受信任来源）。
 on:
   release:
     types: [published]
@@ -14,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write # OIDC 可信发布需要向 GitHub 申请 OIDC token
 
 jobs:
   publish:
@@ -37,8 +39,7 @@ jobs:
       - name: Package VSIX
         run: npx --yes @vscode/vsce@latest package --out Hot100-for-VSCode.vsix --no-dependencies --skip-license
 
-      # --packagePath 直接上传已打包产物，不会执行 npm version / git tag 等操作
+      # --packagePath 直接上传已打包产物，不会执行 npm version / git tag 等操作；
+      # --oidc 使用 GitHub Actions OIDC 交换短期 Marketplace 凭证（vsce >= 3.9.3）
       - name: Publish to Marketplace
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx --yes @vscode/vsce@latest publish --packagePath Hot100-for-VSCode.vsix
+        run: npx --yes @vscode/vsce@latest publish --packagePath Hot100-for-VSCode.vsix --oidc

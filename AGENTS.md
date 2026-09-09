@@ -61,7 +61,7 @@ code --install-extension "D:/code/lc/Hot100-for-VSCode/Hot100-for-VSCode.vsix" -
 - **git remote**：`origin` 指向 `ShiZiMiao/LeetCode-Hot100-VSCode`。发布用 `gh`（已登录 `ShiZiMiao`，repo 权限）。
 - **`.gitignore` 已忽略**：`out/`、`node_modules/`、`*.vsix`、`dist/`。VSIX 不应提交，走 GitHub Releases 资产。
 - **发布方式**：`gh release create v0.x.y --title "..." --notes "..." Hot100-for-VSCode.vsix`（仓库公开，资产可匿名下载）。
-- **Marketplace 自动同步**：`.github/workflows/publish-marketplace.yml` 在 GitHub Release 发布后自动打包并上传 VS Code Marketplace（`ShiZiMiao.leetcode`），无需手动上传。前置条件：仓库 Secret `VSCE_PAT`（注册 ShiZiMiao 发布者的微软账号生成的 Azure DevOps PAT，Scope 为 Marketplace → Manage）。注意：**GitHub Release 前必须先把 package.json 版本号提到对应版本**，Marketplace 同步的是 package.json 里的版本。
+- **Marketplace 自动同步**：`.github/workflows/publish-marketplace.yml` 在 GitHub Release 发布后自动打包并上传 VS Code Marketplace（`ShiZiMiao.leetcode`），用 OIDC 可信发布（`vsce publish --oidc`），**无需 PAT / Azure DevOps**。前置条件：在 https://marketplace.visualstudio.com/manage 的发布者设置中为 `ShiZiMiao.leetcode` 配置 Trusted Publishing 信任策略（关联本仓库与 publish-marketplace.yml 工作流；GitHub Actions 作为受信任来源）。注意：**GitHub Release 前必须先把 package.json 版本号提到对应版本**，Marketplace 同步的是 package.json 里的版本。
 
 ## 核心架构
 
