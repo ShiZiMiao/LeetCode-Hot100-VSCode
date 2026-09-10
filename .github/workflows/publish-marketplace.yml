@@ -29,17 +29,22 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # @vscode/vsce@next（OIDC 支持所在版本线）要求 Node >= 22
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       # 与本地发布完全一致：--no-dependencies（pnpm 布局兼容）、--skip-license（LICENSE 校验冲突）
+      # --readme-path：商店页用 MARKETPLACE.md（无 fork 归属声明；GitHub 首页仍用 README.md）
       - name: Package VSIX
-        run: npx --yes @vscode/vsce@latest package --out Hot100-for-VSCode.vsix --no-dependencies --skip-license
+        run: npx --yes @vscode/vsce@latest package --out Hot100-for-VSCode.vsix --no-dependencies --skip-license --readme-path MARKETPLACE.md
 
       # --packagePath 直接上传已打包产物，不会执行 npm version / git tag 等操作；
-      # --oidc 使用 GitHub Actions OIDC 交换短期 Marketplace 凭证（vsce >= 3.9.3）
+      # --oidc 用 GitHub Actions OIDC 交换短期 Marketplace 凭证。
+      # 注意：--oidc 仅在 @vscode/vsce@next（3.9.3 系列）存在，latest(3.9.2) 无此选项；
+      #       该选项被上游 hideHelp() 隐藏，--help 看不到，但实际可用。
+      #       前置：需在 Marketplace 发布者管理端配置本仓库+工作流的 Trusted Publishing 策略。
       - name: Publish to Marketplace
-        run: npx --yes @vscode/vsce@latest publish --packagePath Hot100-for-VSCode.vsix --oidc
+        run: npx --yes @vscode/vsce@next publish --packagePath Hot100-for-VSCode.vsix --oidc

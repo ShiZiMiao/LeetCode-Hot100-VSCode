@@ -384,7 +384,3 @@ MIT License
 - [VS Code](https://code.visualstudio.com) - 代码编辑器
 - [Marked](https://marked.js.org) - Markdown 解析
 - [KaTeX](https://katex.org) - LaTeX 渲染
-
----
-
-> 本项目 fork 自 [Imzhou-tju/Hot100-for-VSCode](https://github.com/Imzhou-tju/Hot100-for-VSCode)，版权归原作者所有（MIT License）。
