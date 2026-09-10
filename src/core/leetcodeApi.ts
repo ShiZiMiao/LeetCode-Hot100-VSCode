@@ -40,7 +40,43 @@ export class LeetCodeApi {
         return headers;
     }
 
+    /**
+     * 网络层瞬断（代理/中间设备切断 TLS 握手或未发出请求体）是否值得重试。
+     * retrySafe 由 requestOnce 标记：GET 恒可重试；POST 仅在请求体尚未完整发出
+     * 或握手未建立时重试，避免提交类接口重复执行。
+     */
+    private static isTransientNetworkError(err: any): boolean {
+        const msg = String(err?.message || '');
+        const code = String(err?.code || '');
+        return /before secure TLS connection was established|socket disconnected|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ETIMEDOUT|ENOTFOUND|socket hang up|请求超时/i.test(msg)
+            || ['ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ETIMEDOUT', 'ENOTFOUND'].includes(code);
+    }
+
     private request(method: string, path: string, data?: any): Promise<any> {
+        // 瞬时网络错误自动重试（新连接），指数退避；HTTP 状态错误不重试
+        return new Promise((resolve, reject) => {
+            const maxAttempts = 3;
+            const attempt = (n: number) => {
+                this.requestOnce(method, path, data).then(resolve, (err) => {
+                    const retriable = LeetCodeApi.isTransientNetworkError(err) && err?.retrySafe === true;
+                    if (n < maxAttempts && retriable) {
+                        setTimeout(() => attempt(n + 1), 500 * Math.pow(2, n - 1));
+                        return;
+                    }
+                    if (LeetCodeApi.isTransientNetworkError(err)) {
+                        const friendly = new Error(`网络连接不稳定（${err.message}），请检查网络或代理后重试`);
+                        (friendly as any).cause = err;
+                        reject(friendly);
+                        return;
+                    }
+                    reject(err);
+                });
+            };
+            attempt(1);
+        });
+    }
+
+    private requestOnce(method: string, path: string, data?: any): Promise<any> {
         return new Promise(async (resolve, reject) => {
             const headers = await this.getHeaders();
 
@@ -72,13 +108,22 @@ export class LeetCodeApi {
                 });
             });
 
+            // 请求体是否已完整交给操作系统发送：未完整发出前失败可安全重试（含 POST）
+            let requestFinished = false;
+            req.on('finish', () => { requestFinished = true; });
+
             req.on('error', (e) => {
+                // 握手阶段断开时服务器必然没收到请求体
+                const handshakeOnly = /before secure TLS connection was established|socket disconnected/i.test(String(e?.message || ''));
+                (e as any).retrySafe = method === 'GET' || !requestFinished || handshakeOnly;
                 reject(e);
             });
 
             // 连接建立后若无响应（代理/网络挂起）会无限等待，超时销毁连接走 error 分支
             req.setTimeout(20000, () => {
-                req.destroy(new Error(`请求超时: ${path}`));
+                const timeoutErr: any = new Error(`请求超时: ${path}`);
+                timeoutErr.retrySafe = method === 'GET' || !requestFinished;
+                req.destroy(timeoutErr);
             });
 
             if (data) {

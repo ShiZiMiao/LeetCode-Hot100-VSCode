@@ -1,7 +1,7 @@
-# LeetCode Hot 100 刷题助手
+# LeetCode Hot100 Pro
 
 <p align="center">
-  <img src="resources/leetcode.png" width="128" height="128" alt="LeetCode Logo">
+  <img src="resources/hot100-pro.png" width="128" height="128" alt="LeetCode Hot100 Pro">
 </p>
 
 <p align="center">
@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/VS%20Code-1.96.0+-blue?logo=visualstudiocode" alt="VS Code Version">
+  <img src="https://img.shields.io/badge/VS%20Code-1.107.0+-blue?logo=visualstudiocode" alt="VS Code Version">
   <img src="https://img.shields.io/badge/TypeScript-5.0+-blue?logo=typescript" alt="TypeScript">
   <img src="https://img.shields.io/badge/Node.js-16+-green?logo=nodedotjs" alt="Node.js">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
@@ -28,7 +28,7 @@
 | 技术 | 版本 | 用途 |
 |------|------|------|
 | **TypeScript** | 5.7+ | 主要开发语言，提供类型安全和更好的开发体验 |
-| **VS Code Extension API** | 1.96+ | 扩展开发框架，实现 IDE 深度集成 |
+| **VS Code Extension API** | 1.107+ | 扩展开发框架，实现 IDE 深度集成 |
 | **Node.js** | 16+ | 运行时环境 |
 | **pnpm** | 8+ | 高效的包管理工具 |
 
@@ -37,8 +37,9 @@
 | 技术 | 用途 |
 |------|------|
 | **Webview API** | 在 VS Code 中渲染富文本内容 |
-| **Marked.js** | Markdown 解析引擎，处理题解内容 |
-| **KaTeX** | LaTeX 数学公式渲染，支持复杂度分析公式 |
+| **扩展端 Markdown 渲染** | 题面/题解的 Markdown 在扩展进程渲染为静态 HTML（不依赖 CDN 解析库，保证内容一定可显示） |
+| **highlight.js**（本地打包） | 题解代码语法高亮，随扩展分发，不依赖网络 |
+| **KaTeX** | LaTeX 数学公式渲染，支持复杂度分析公式（CDN 可选增强，加载失败不影响正文） |
 | **Custom CSS** | 自适应 VS Code 主题的样式系统 |
 
 ### 后端通信技术
@@ -54,14 +55,14 @@
 ### 1. 🔐 安全的 Cookie 认证机制
 
 ```typescript
-// 采用 VS Code 安全存储机制
-context.workspaceState.update('leetcode_session', session);
-context.workspaceState.update('leetcode_csrftoken', csrftoken);
+// 采用 VS Code SecretStorage 安全存储（系统级加密，不落明文文件）
+await context.secrets.store('leetcode_session_cookie', cookie);
+const cookie = await context.secrets.get('leetcode_session_cookie');
 ```
 
-- **安全存储**：使用 VS Code 的 `workspaceState` 安全存储用户凭证，不写入任何本地文件
-- **会话管理**：实现完整的登录/登出状态管理
-- **请求拦截**：自动在所有 API 请求中注入认证信息
+- **安全存储**：登录 Cookie 存入 VS Code `SecretStorage`（由操作系统密钥链加密），不写入任何明文文件，也不放进 workspaceState
+- **会话管理**：实现完整的登录/登出状态管理，通过 `userStatus.isSignedIn` 校验会话有效性
+- **请求拦截**：自动在所有 API 请求中注入 `Cookie` 与 `x-csrftoken` 认证信息
 
 ### 2. 📊 GraphQL API 深度集成
 
@@ -86,11 +87,11 @@ const query = `
 ### 3. 🎨 智能 Webview 渲染系统
 
 ```typescript
-// 多层渲染管线
-1. Markdown 解析 (Marked.js)
-2. LaTeX 公式渲染 (KaTeX)  
-3. 代码语法高亮
-4. 多语言代码标签页生成
+// 多层渲染管线（扩展端完成主体渲染）
+1. Markdown → 静态 HTML（扩展端 TypeScript 渲染，无 CDN 依赖）
+2. LaTeX 公式渲染 (KaTeX，webview 内可选增强)
+3. 代码语法高亮 (highlight.js 本地资源，明/暗主题自动切换)
+4. 多语言代码标签页生成（官方题解优先语言默认选中）
 ```
 
 **创新特性：**
@@ -151,17 +152,23 @@ class Hot100Provider implements vscode.TreeDataProvider<Question> {
 
 | 功能 | 描述 | 技术实现 |
 |------|------|----------|
-| � Cookie 登录 | 安全的账号认证 | workspaceState + HTTP Headers |
+| � Cookie 登录 | 安全的账号认证 | SecretStorage + HTTP Headers |
 | 📋 题目列表 | Hot 100 完整题目 | TreeView + 静态数据 |
-| 📝 题目详情 | 富文本题目描述 | Webview + HTML |
-| 📖 题解查看 | 官方/社区题解 | GraphQL + Markdown |
-| 🧮 公式渲染 | LaTeX 数学公式 | KaTeX CDN |
+| 📝 题目详情 | 富文本题目描述，每题单页（重复点击自动聚焦） | Webview + 扩展端渲染 |
+| 📖 题解查看 | 官方/社区题解，多语言代码标签页 | GraphQL + Markdown |
+| 🧮 公式渲染 | LaTeX 数学公式 | KaTeX（可选增强） |
 | 💻 代码标签页 | 多语言切换 | DOM 操作 + 语言检测 |
 | ✅ 在线测试 | 运行测试用例 | GraphQL API |
 | 🚀 代码提交 | 提交并获取结果 | GraphQL API |
-| �🐛 本地调试 | 生成调试文件 | 模板生成 + 终端执行 |
+| 🔍 判题详情 | 通过/未通过的完整判题信息（输入/输出/预期/错误，图标标识），可一键跳转官方判题页 | 输出通道 + 编辑器诊断 |
+| �🐛 本地调试 | 生成调试驱动，Python 可直接打断点 | 模板生成 + 原生调试会话 |
 
 # 📦 安装
+
+### 从插件市场安装（推荐）
+
+- **VS Code Marketplace**：在扩展面板搜索 `LeetCode Hot100 Pro`（发布ID：`ShiZiMiao.leetcode`），或访问 [marketplace.visualstudio.com/items?itemName=ShiZiMiao.leetcode](https://marketplace.visualstudio.com/items?itemName=ShiZiMiao.leetcode)
+- **Open VSX**（Cursor / VSCodium / Windsurf 等衍生编辑器）：[open-vsx.org/extension/ShiZiMiao/leetcode](https://open-vsx.org/extension/ShiZiMiao/leetcode)，或在扩展面板切换源后搜索安装
 
 ### 从源码安装
 
@@ -223,15 +230,14 @@ vsce package
    - 选择你喜欢的编程语言
    - 代码文件会自动打开
 
-2. **生成调试文件**
-   - 点击编辑器右上角的 **"🐛 调试"** 按钮
-   - 插件会自动生成一个包含测试用例的调试文件
-   - 调试文件保存在与原代码相同的目录
+2. **本地调试（LeetCode: 本地调试）**
+   - 点击编辑器右上角的 **"🐛 调试"** 按钮，插件自动生成包含全部示例测试用例的调试驱动，统一放在题目文件旁的 `debug/` 子目录
+   - **Python**：自动启动 VS Code 原生调试会话（需安装 Python Debugger 扩展），断点直接打在题解文件上即可命中
+   - **Java / C++ / JavaScript / TypeScript / Go / Rust**：生成自包含调试模板并打开，按提示运行即可
+   - 驱动会逐示例运行并对照从题面提取的预期输出，输出 通过/未通过 与顺序无关比对结果
 
-3. **运行调试**
-   - 点击 **"▶ 运行调试"** 按钮
-   - 代码会在 VS Code 终端中执行
-   - 查看输出结果，对比预期答案
+3. **快速运行（LeetCode: 运行当前文件）**
+   - 点击 **"▶ 运行"** 按钮，代码在 VS Code 终端中编译执行，快速查看输出
 
 #### 调试文件说明
 
@@ -243,26 +249,24 @@ vsce package
 
 #### 各语言调试示例
 
-**Python 调试文件：**
-```python
-# debug_1_two_sum.py
-class Solution:
-    def twoSum(self, nums, target):
-        # 你的代码...
-        pass
+驱动文件命名：Python/C++/JS/TS/Go/Rust 为 `{题号}_{题名}_debug.{ext}`（如 `1_two-sum_debug.py`），Java 为 `{题名驼峰}Debug.java`（如 `TwoSumDebug.java`）。
 
-# 测试用例
+**Python 调试驱动（自动加载你的题解文件并逐示例比对）：**
+```python
+# 1_two-sum_debug.py
+# 通过 importlib 加载题解文件 1_two-sum.py，注入测试用例运行
 if __name__ == "__main__":
     solution = Solution()
     print(solution.twoSum([2,7,11,15], 9))  # 预期: [0,1]
 ```
 
-**Java 调试文件：**
+**Java 调试模板：**
 ```java
-// debug_1_two_sum.java
+// TwoSumDebug.java
 class Solution {
     public int[] twoSum(int[] nums, int target) {
         // 你的代码...
+        return new int[]{};
     }
     
     public static void main(String[] args) {
@@ -273,9 +277,9 @@ class Solution {
 }
 ```
 
-**C++ 调试文件：**
+**C++ 调试模板：**
 ```cpp
-// debug_1_two_sum.cpp
+// 1_two-sum_debug.cpp
 #include <vector>
 #include <iostream>
 using namespace std;
@@ -284,6 +288,7 @@ class Solution {
 public:
     vector<int> twoSum(vector<int>& nums, int target) {
         // 你的代码...
+        return {};
     }
 };
 
@@ -312,7 +317,7 @@ int main() {
 #### 常见问题
 
 **Q: 调试文件在哪里？**
-A: 在你的代码文件同目录下，文件名格式为 `debug_题目ID_题目名.扩展名`
+A: 在题目文件所在目录的 `debug/` 子目录下，文件名格式为 `{题号}_{题名}_debug.扩展名`（Java 为 `{题名驼峰}Debug.java`）
 
 **Q: 如何修改测试用例？**
 A: 直接编辑调试文件中的测试用例部分，保存后重新运行即可
@@ -342,16 +347,16 @@ src/
 
 ## ⚙️ 支持的编程语言
 
-| 语言 | 扩展名 | 本地调试 | 编译运行 |
+| 语言 | 扩展名 | 本地调试驱动 | 编译运行 |
 |------|--------|---------|----------|
-| Python3 | .py | ✅ | `python` |
+| Python3 | .py | ✅ 原生调试会话 | `python` |
 | Java | .java | ✅ | `javac` + `java` |
 | C++ | .cpp | ✅ | `g++` |
 | JavaScript | .js | ✅ | `node` |
 | TypeScript | .ts | ✅ | `ts-node` |
 | Go | .go | ✅ | `go run` |
 | Rust | .rs | ✅ | `rustc` + 运行 |
-| C | .c | ✅ | `gcc` |
+| C / C# / Kotlin / Swift / Ruby / Scala / PHP | .c/.cs/.kt/... | — 正常刷题，暂未提供调试模板 | 需自备工具链 |
 
 ## 🔧 开发
 
@@ -365,10 +370,10 @@ pnpm run test     # 运行测试
 
 ## 📊 项目统计
 
-- **代码行数**：~2000+ 行 TypeScript
-- **API 接口**：6+ GraphQL 查询封装
-- **支持语言**：8 种编程语言
-- **功能模块**：10+ 核心功能
+- **代码行数**：~5000 行 TypeScript
+- **API 封装**：8+ 个（题面/测试/提交/判题轮询/官方题解/社区题解列表与详情/登录校验）
+- **支持语言**：14 种编程语言（其中 7 种提供本地调试驱动）
+- **功能命令**：登录、退出、刷新、打开题目、运行测试、提交、本地调试、快速运行、查看题解
 
 ## 📝 更新日志
 
@@ -382,7 +387,7 @@ MIT License
 
 - [LeetCode](https://leetcode.cn) - 算法练习平台
 - [VS Code](https://code.visualstudio.com) - 代码编辑器
-- [Marked](https://marked.js.org) - Markdown 解析
+- [highlight.js](https://highlightjs.org) - 题解代码语法高亮
 - [KaTeX](https://katex.org) - LaTeX 渲染
 
 ---

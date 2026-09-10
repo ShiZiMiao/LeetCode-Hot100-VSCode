@@ -91,7 +91,7 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
                 }
             }
         } catch (error) {
-            vscode.window.showErrorMessage(`加载题目状态失败: ${error}`);
+            vscode.window.showErrorMessage(`加载题目状态失败: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
 }

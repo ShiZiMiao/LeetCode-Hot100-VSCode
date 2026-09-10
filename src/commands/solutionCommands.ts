@@ -64,7 +64,7 @@ export class SolutionPanelManager {
 
             return;
         } catch (error) {
-            vscode.window.showErrorMessage(`加载题解失败: ${error}`);
+            vscode.window.showErrorMessage(`加载题解失败: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
 
@@ -76,7 +76,7 @@ export class SolutionPanelManager {
             const articleData = await this.leetCodeApi.getSolutionArticle(slug);
             return articleData?.data?.solutionArticle;
         } catch (error) {
-            vscode.window.showErrorMessage(`加载题解详情失败: ${error}`);
+            vscode.window.showErrorMessage(`加载题解详情失败: ${error instanceof Error ? error.message : String(error)}`);
             return null;
         }
     }

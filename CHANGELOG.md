@@ -2,6 +2,17 @@
 
 All notable changes to the "leetcode" extension will be documented in this file.
 
+## 0.1.8
+
+- **更名与换标**：显示名称改为 **LeetCode Hot100 Pro**，新图标（琥珀渐变 + 火焰 + 100），与上游 fork 原插件正式区分（扩展 ID `ShiZiMiao.leetcode` 不变，自动更新不受影响）
+- **判题详情通道**：每次测试/提交（无论通过与否）的完整判题信息写入输出面板「LeetCode 判题结果」——状态（中英双语）、通过用例数、首个失败用例、输入/输出/预期结果、编译/运行时错误，图标标识（✅/❌/🧪/🚀/📥/📤/🎯 等），判题后自动展开面板；右下角 toast 只留一行简讯，附「原始判题响应」「在浏览器打开」按钮
+- **原始判题响应**：可经 toast 按钮或命令「LeetCode: 查看最近一次原始判题响应」在 JSON 编辑器中查看（支持折叠）
+- **每题单页**：题面页/题解页按题去重，重复点击只聚焦已打开页面（含快速双击防竞态）；「查看题解」编辑器标题按钮移除，命令面板仍可用
+- **修复误提交**：焦点在输出面板等非代码视图时，测试/提交/本地调试不再把面板内容当代码提交，自动回退到当前题解文件
+- **网络稳定性**：TLS 偶发瞬断自动安全重试（GET 总重试；POST 仅在请求体未完整发出前重试，杜绝重复提交），失败提示改为中文
+- **调试体验**：缺少 Python 调试扩展时可一键安装 ms-python.debugpy；本地调试不支持语言的提示更新为实际支持列表（Python3/Java/C++/JS/TS/Go/Rust）
+- **商店信息规范**：商店详情页不再展示 fork 说明（fork 归属移至仓库 README 文末一行）；README 全面对齐当前实现（版本要求、SecretStorage 存储、渲染管线、双商店安装入口、调试文件命名与语言支持）
+
 ## 0.1.7
 
 - **本地调试环境与判题机对齐**：按 LeetCode 判题机 `globals()` 实测重建驱动预导入——星导入 `string/re/collections/heapq/bisect/copy/math/random/statistics/itertools/functools/operator/io/sys/json`（含 Counter/defaultdict/lru_cache/inf 等散名），`time/os` 仅模块名，`datetime` 模块 + 常用类，`typing` 最后导入；`sortedcontainers` 本地未安装时自动以 bisect 兜底；补齐 LC 定制的 `heappush_max` 系列大顶堆函数；修复解法中直接引用 `collections.defaultdict` 等模块名时报 NameError 的问题（官方有而本地此前未注入）；移除官方不存在的 `queue`

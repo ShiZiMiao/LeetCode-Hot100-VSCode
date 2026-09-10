@@ -18,3 +18,4 @@ README.md
 README_pkg.md
 **/*.pyc
 __pycache__/
+resources/leetcode.png

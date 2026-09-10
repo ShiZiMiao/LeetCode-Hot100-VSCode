@@ -1,10 +1,10 @@
 {
   "name": "leetcode",
   "publisher": "ShiZiMiao",
-  "displayName": "LeetCode Hot 100 刷题助手",
+  "displayName": "LeetCode Hot100 Pro",
   "description": "在 VS Code 中一站式刷 LeetCode Hot 100：题目浏览、官方/社区题解、多语言编码、在线测试提交与本地调试。",
-  "version": "0.1.7",
-  "icon": "resources/leetcode.png",
+  "version": "0.1.8",
+  "icon": "resources/hot100-pro.png",
   "engines": {
     "vscode": "^1.107.0"
   },
@@ -73,6 +73,10 @@
         "command": "leetcode.viewSolution",
         "title": "LeetCode: 查看题解",
         "icon": "$(book)"
+      },
+      {
+        "command": "leetcode.showRawJudge",
+        "title": "LeetCode: 查看最近一次原始判题响应"
       }
     ],
     "viewsContainers": {
@@ -119,18 +123,13 @@
           "when": "resourcePath =~ /leetcode/"
         },
         {
-          "command": "leetcode.viewSolution",
+          "command": "leetcode.test",
           "group": "navigation@2",
           "when": "resourcePath =~ /leetcode/"
         },
         {
-          "command": "leetcode.test",
-          "group": "navigation@3",
-          "when": "resourcePath =~ /leetcode/"
-        },
-        {
           "command": "leetcode.submit",
-          "group": "navigation@4",
+          "group": "navigation@3",
           "when": "resourcePath =~ /leetcode/"
         }
       ]
