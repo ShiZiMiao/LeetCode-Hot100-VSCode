@@ -2,7 +2,7 @@
   "name": "leetcode",
   "publisher": "ShiZiMiao",
   "displayName": "LeetCode Hot 100 刷题助手",
-  "description": "在 VS Code 中一站式刷 LeetCode Hot 100：题目浏览、官方/社区题解、多语言编码、在线测试提交与本地调试。Imzhou-tju/Hot100-for-VSCode 的修复 fork。",
+  "description": "在 VS Code 中一站式刷 LeetCode Hot 100：题目浏览、官方/社区题解、多语言编码、在线测试提交与本地调试。",
   "version": "0.1.7",
   "icon": "resources/leetcode.png",
   "engines": {
