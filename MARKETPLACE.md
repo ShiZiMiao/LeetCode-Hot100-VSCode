@@ -23,7 +23,7 @@
 
 | 功能 | 说明 |
 |------|------|
-| 🔐 Cookie 登录 | 凭证存入 VS Code SecretStorage（系统密钥链加密，不落明文），自动校验会话 |
+| 🔐 一键登录 | 点击登录自动打开系统浏览器中的 LeetCode 登录页（密码/扫码/第三方均可），完成后自动获取会话；也支持手动粘贴 Cookie。凭证存入 VS Code SecretStorage（系统密钥链加密，不落明文），自动校验与过期检测 |
 | 📋 题目列表 | 与官网《热题 100》一致的 100 题，实时显示难度与通过状态，通过自动打勾 |
 | 📝 题面渲染 | 富文本题面/题解，每题单页（重复点击自动聚焦），LaTeX 公式、语法高亮、多语言标签页 |
 | ✅ 测试与提交 | 一键运行示例测试、提交判题；通过与否都有完整判题详情（输入/输出/预期/错误原因），可一键跳转官方判题页 |
@@ -51,9 +51,9 @@ pnpm install && pnpm run compile
 
 ### 1. 登录
 
-点击状态栏 **"LeetCode: 未登录"**，粘贴两个 Cookie 值：`LEETCODE_SESSION` 与 `csrftoken`。
+点击状态栏 **"LeetCode: 未登录"** → **"打开浏览器自动登录"**：插件用系统的 Edge/Chrome 打开真实的 leetcode.cn 登录窗口（全新隔离的临时浏览器配置，仅用于本次登录、用后即删），你在窗口里正常登录——密码、手机验证码、LeetCode App 扫码、GitHub 第三方都可以——插件随即自动读取会话并完成校验。全程不接触你的账号密码，也不读取你日常浏览器中的任何数据。
 
-> 获取方式：浏览器登录 [leetcode.cn](https://leetcode.cn) → F12 → Application → Cookies
+> 没有 Edge/Chrome 或自动方式异常时，展开 **"手动粘贴 Cookie"**：浏览器登录 [leetcode.cn](https://leetcode.cn) → F12 → Application → Cookies，粘贴 `LEETCODE_SESSION` 与 `csrftoken` 两个值（支持整段 Cookie 粘贴自动拆分）。
 
 ### 2. 刷题
 
@@ -74,6 +74,7 @@ pnpm install && pnpm run compile
 ## 技术实现
 
 - **数据层**：leetcode.cn GraphQL + REST 封装（题面、测试 `interpret_solution`、提交、判题轮询、官方/社区题解、登录校验）；列表按 100/页并行分页拉取，状态与难度实时同步
+- **一键登录**：playwright-core（vendor 随包）驱动系统 Edge/Chrome 打开隔离临时 profile 的真实登录页，轮询浏览器上下文读取 `leetcode.cn` 域的两条会话 Cookie；不读浏览器本地 Cookie 数据库（Windows 上已被 v20 App-Bound 加密封堵，且属恶意软件手法）
 - **渲染层**：Markdown 在扩展进程渲染为静态 HTML（不依赖 CDN 解析库），题解代码标签页取自官方语言标签；highlight.js 本地打包（明暗主题自动切换），KaTeX 作可选增强
 - **判题详情**：通过/未通过统一解析输出通道展示，原始响应在可折叠的 JSON 编辑器中按需查看
 - **网络层**：20s 超时、连接不复用、瞬断安全重试（GET 总是重试；POST 仅在请求体未完整发出前重试）
@@ -85,6 +86,7 @@ src/
 ├── extension.ts              # 入口：命令注册、题面/题解 webview、判题上报
 ├── core/
 │   ├── authManager.ts        # SecretStorage 会话管理
+│   ├── browserLogin.ts       # 浏览器一键登录（Edge/Chrome 临时 profile + Cookie 读取）
 │   └── leetcodeApi.ts        # GraphQL/REST 封装 + 重试
 ├── data/hot100Data.ts        # 热题 100 静态数据
 ├── views/hot100Provider.ts   # TreeView（难度/状态）
@@ -107,7 +109,8 @@ pnpm install       # 安装依赖
 pnpm run compile   # 编译
 pnpm run watch     # 监听编译
 pnpm run lint      # 代码检查
-pnpm test          # 运行测试
+pnpm run test:unit # 纯逻辑单测（node:test，无需 VS Code）
+pnpm test          # 运行 VS Code 集成测试
 ```
 
 ## 更新日志
@@ -121,4 +124,4 @@ pnpm test          # 运行测试
 ## 致谢
 
 - [LeetCode](https://leetcode.cn) · [VS Code](https://code.visualstudio.com)
-- [highlight.js](https://highlightjs.org) · [KaTeX](https://katex.org)
+- [highlight.js](https://highlightjs.org) · [KaTeX](https://katex.org) · [Playwright](https://playwright.dev)

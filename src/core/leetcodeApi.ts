@@ -1,6 +1,7 @@
 
 import { AuthManager } from './authManager';
 import { HOT_100_IDS } from '../data/hot100Data';
+import { isTransientNetworkError, computeRetrySafe } from '../utils/networkRetry';
 import * as https from 'https';
 import * as crypto from 'crypto';
 
@@ -41,15 +42,15 @@ export class LeetCodeApi {
     }
 
     /**
-     * 网络层瞬断（代理/中间设备切断 TLS 握手或未发出请求体）是否值得重试。
-     * retrySafe 由 requestOnce 标记：GET 恒可重试；POST 仅在请求体尚未完整发出
-     * 或握手未建立时重试，避免提交类接口重复执行。
+     * 会话过期回调：请求被服务端判定为未登录（HTTP 401 或 status_code 1002）时触发。
+     * 由 extension.ts 注入 toast（限频）；这里不依赖 vscode，保持 API 层可独立测试。
      */
-    private static isTransientNetworkError(err: any): boolean {
-        const msg = String(err?.message || '');
-        const code = String(err?.code || '');
-        return /before secure TLS connection was established|socket disconnected|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ETIMEDOUT|ENOTFOUND|socket hang up|请求超时/i.test(msg)
-            || ['ECONNRESET', 'ECONNREFUSED', 'EAI_AGAIN', 'ETIMEDOUT', 'ENOTFOUND'].includes(code);
+    public onSessionExpired?: () => void;
+
+    private static isSessionExpiredResponse(res: { statusCode?: number }, json: any): boolean {
+        if (res.statusCode === 401) { return true; }
+        // leetcode.cn 未登录时接口仍返回 200，靠业务码判定：1002 = 未登录/会话过期
+        return !!(json && typeof json === 'object' && (json.status_code === 1002 || json.status === 401));
     }
 
     private request(method: string, path: string, data?: any): Promise<any> {
@@ -58,12 +59,12 @@ export class LeetCodeApi {
             const maxAttempts = 3;
             const attempt = (n: number) => {
                 this.requestOnce(method, path, data).then(resolve, (err) => {
-                    const retriable = LeetCodeApi.isTransientNetworkError(err) && err?.retrySafe === true;
+                    const retriable = isTransientNetworkError(err) && err?.retrySafe === true;
                     if (n < maxAttempts && retriable) {
                         setTimeout(() => attempt(n + 1), 500 * Math.pow(2, n - 1));
                         return;
                     }
-                    if (LeetCodeApi.isTransientNetworkError(err)) {
+                    if (isTransientNetworkError(err)) {
                         const friendly = new Error(`网络连接不稳定（${err.message}），请检查网络或代理后重试`);
                         (friendly as any).cause = err;
                         reject(friendly);
@@ -86,7 +87,9 @@ export class LeetCodeApi {
                 path: path,
                 method: method,
                 headers: headers,
-                rejectUnauthorized: false, // Bypass SSL checks for stability in proxy environments
+                // TLS 证书严格校验（0.1.9 起恢复）：代理空闲切断问题已由超时+禁复用+瞬断重试
+                // 兜底（见 request/requestOnce），不再靠关闭校验换稳定；若用户环境有 MITM 代理
+                // 导致证书失败，会在报错里透出原始证书错误便于排查
                 // 代理/中间设备会静默切断空闲 keep-alive 连接，复用死连接会无限挂起；
                 // 每次新建连接（连接池关闭），配合超时兜底
                 agent: false
@@ -96,13 +99,21 @@ export class LeetCodeApi {
                 let body = '';
                 res.on('data', (chunk) => body += chunk);
                 res.on('end', () => {
+                    let parsed: any = undefined;
                     if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
                         try {
-                            resolve(JSON.parse(body));
+                            parsed = JSON.parse(body);
                         } catch (e) {
-                            resolve(body); // Fallback for non-JSON
+                            parsed = body; // Fallback for non-JSON
                         }
+                        if (LeetCodeApi.isSessionExpiredResponse(res, parsed)) {
+                            this.onSessionExpired?.();
+                        }
+                        resolve(parsed);
                     } else {
+                        if (LeetCodeApi.isSessionExpiredResponse(res, undefined)) {
+                            this.onSessionExpired?.();
+                        }
                         reject(new Error(`Request failed with status ${res.statusCode}: ${body}`));
                     }
                 });
@@ -113,9 +124,7 @@ export class LeetCodeApi {
             req.on('finish', () => { requestFinished = true; });
 
             req.on('error', (e) => {
-                // 握手阶段断开时服务器必然没收到请求体
-                const handshakeOnly = /before secure TLS connection was established|socket disconnected/i.test(String(e?.message || ''));
-                (e as any).retrySafe = method === 'GET' || !requestFinished || handshakeOnly;
+                (e as any).retrySafe = computeRetrySafe(method, requestFinished, String(e?.message || ''));
                 reject(e);
             });
 
@@ -223,7 +232,6 @@ export class LeetCodeApi {
                     path: u.pathname + u.search,
                     method: 'GET',
                     headers: { 'User-Agent': BROWSER_UA, 'Accept': '*/*' },
-                    rejectUnauthorized: false,
                     agent: false // 同 request()：避免复用被代理静默切断的空闲连接
                 },
                 (res) => {
@@ -260,7 +268,6 @@ export class LeetCodeApi {
                     path: u.pathname + u.search,
                     method: 'GET',
                     headers: { 'User-Agent': BROWSER_UA, 'Accept': '*/*' },
-                    rejectUnauthorized: false,
                     agent: false // 同 request()：避免复用被代理静默切断的空闲连接
                 },
                 (res) => {
@@ -307,7 +314,6 @@ export class LeetCodeApi {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
                         'Accept': 'application/json'
                     },
-                    rejectUnauthorized: false,
                     agent: false // 同 request()：避免复用被代理静默切断的空闲连接
                 },
                 (res) => {

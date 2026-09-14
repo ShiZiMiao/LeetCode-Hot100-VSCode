@@ -3,13 +3,14 @@
   "publisher": "ShiZiMiao",
   "displayName": "LeetCode Hot100 Pro",
   "description": "在 VS Code 中一站式刷 LeetCode Hot 100：题目浏览、官方/社区题解、多语言编码、在线测试提交与本地调试。",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "icon": "resources/hot100-pro.png",
   "engines": {
     "vscode": "^1.107.0"
   },
   "categories": [
-    "Other"
+    "Education",
+    "Programming Languages"
   ],
   "keywords": [
     "leetcode",
@@ -141,7 +142,8 @@
     "watch": "tsc -watch -p ./",
     "pretest": "pnpm run compile && pnpm run lint",
     "lint": "eslint src",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "test:unit": "node --test \"out/unit/*.unit.test.js\""
   },
   "devDependencies": {
     "@types/mocha": "^10.0.10",
@@ -154,6 +156,6 @@
     "typescript-eslint": "^8.48.1"
   },
   "dependencies": {
-    "marked": "^17.0.1"
+    "playwright-core": "^1.63.0"
   }
 }

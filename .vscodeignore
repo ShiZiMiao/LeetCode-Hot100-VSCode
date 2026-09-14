@@ -19,3 +19,5 @@ README_pkg.md
 **/*.pyc
 __pycache__/
 resources/leetcode.png
+# 纯逻辑单测编译产物（本地/CI 用 node --test 跑，不进发布包）
+out/unit/**

@@ -25,3 +25,6 @@ npm-debug.log*
 # 调试残留（本地调试会生成 __pycache__/.pyc）
 __pycache__/
 *.pyc
+
+# ZCode 工作区会话状态
+.zcode/

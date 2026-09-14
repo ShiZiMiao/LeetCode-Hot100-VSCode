@@ -10,8 +10,13 @@
 		"rootDir": "src",
 		"strict": true,   /* enable all strict type-checking options */
 		/* Additional Checks */
-		// "noImplicitReturns": true, /* Report error when not all code paths in function return a value. */
-		// "noFallthroughCasesInSwitch": true, /* Report errors for fallthrough cases in switch statement. */
+		// "noImplicitReturns": true, /* Report error instead of allowing missing return statements */
+		// "noFallthroughCasesInSwitch": true, /* Report error when not all paths through the function body terminate */
 		// "noUnusedParameters": true,  /* Report errors on unused parameters. */
-	}
+	},
+	"exclude": [
+		"node_modules",
+		"out",
+		"vendor"
+	]
 }

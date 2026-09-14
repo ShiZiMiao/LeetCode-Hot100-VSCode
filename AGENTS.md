@@ -10,7 +10,7 @@
 - **当前仓库（fork 修复版）**：`https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode`
 - **当前版本**：`0.1.8`
 - **技术栈**：TypeScript、Node.js（>=16）、VS Code Extension API（>=1.107）、pnpm
-- **运行时依赖**：`marked`（仅用于 webview 场景，实际通过 CDN 加载）
+- **运行时依赖**：`playwright-core`（登录一键浏览器功能，`require` 走 `vendor/playwright-core/` 副本）。**打包不经过 node_modules**（vsce 带 `--no-dependencies`），vendor 副本须先同步（见打包步骤）；历史死依赖 `marked` 已移除。webview 渲染全部扩展端自研 + 本地 vendor 资源。
 
 ## 常用命令（Windows 环境）
 
@@ -25,6 +25,9 @@ PATH="$APPDATA/npm:$PATH" pnpm run watch
 
 # lint
 PATH="$APPDATA/npm:$PATH" pnpm run lint
+
+# 纯逻辑单测（需先 compile；CI 同款，见 .github/workflows/ci.yml：lint+compile+单测）
+PATH="$APPDATA/npm:$PATH" pnpm run test:unit
 
 # 安装依赖
 PATH="$APPDATA/npm:$PATH" pnpm install
@@ -48,6 +51,7 @@ PATH="/c/Users/lecoo/AppData/Roaming/npm:$PATH" \
 3. **`--readme-path MARKETPLACE.md` 必须加**：两个插件商店（VS Code Marketplace / Open VSX）展示的详情页内容取自 VSIX 内的 readme 资产。`README.md`（仓库首页用）在文末带一行 fork 归属声明；`MARKETPLACE.md` 是不含任何 fork 说明的商店专用版本。vsce 的 ReadmeProcessor 按此选项匹配文件名生成 `Content.Details` 资产——**不加该参数会退回 README.md，把 fork 声明带上商店**。CI 的 package 步已加。改 README 正文时记得同步 MARKETPLACE.md。
 4. ~~打包前需删除 README 的 SVG 图片块~~：已修复，`README.md` 现在引用 `resources/hot100-pro.png`（Marketplace 不渲染 SVG），不再需要打包前的临时改动。
 5. 其他仓库根目录的临时文件（如 `__pycache__/`、`*.tmp_*.js`）会被 vsce 打进 VSIX，打包前确认 `git status` 只有预期的改动。
+6. **打包前同步 `vendor/playwright-core/`**（登录一键浏览器功能的运行时库，VSIX 走它而非 node_modules）：playwright-core 版本变化后重新拷贝——`lib/ index.js index.mjs package.json browsers.json LICENSE NOTICE ThirdPartyNotices.txt` 拷入 `vendor/playwright-core/`，随后**只删除 `lib/vite/` 与 `lib/tools/`**（trace/UI 资产，进程内 launch 不加载，省约 4MB）；`lib/entry/`、`lib/server/` 等其余 lib 内容必须保留。`types/`、`bin/`、`index.d.ts` 不用拷（bin 是 CLI 与捆绑 node，进程内 API 不经过它；已实测裁剪后的 vendor 副本可正常拉起系统 Edge）。`tsconfig.json` 已 `exclude: vendor`，别让 tsc 去编译第三方包。
 
 打包后在本地安装测试：
 
@@ -80,24 +84,34 @@ src/
 ├── extension.ts          扩展入口，注册全部命令与 webview 渲染逻辑（主体）
 ├── core/
 │   ├── authManager.ts    Cookie 会话管理（存在 context.secrets）
+│   ├── browserLogin.ts   浏览器一键登录（playwright-core 走 vendor 副本，驱动系统 Edge/Chrome 临时 profile 读 Cookie）
 │   └── leetcodeApi.ts    LeetCode GraphQL 封装（https://leetcode.cn/graphql）
 ├── data/
 │   └── hot100Data.ts     Hot 100 题目静态数据
 ├── views/
 │   └── hot100Provider.ts TreeView 数据提供者
-├── utils/
-│   ├── debugUtils.ts     本地调试文件生成
+├── utils/                （judgeReport/problemText/loginCookie/networkRetry 为无 vscode 依赖的纯逻辑，src/unit 单测覆盖）
+│   ├── debugUtils.ts     本地调试文件生成（Python 驱动含原地入参比对 + pydevd 自排除注册）
+│   ├── judgeReport.ts    判题报告纯逻辑（逐用例分组 / 提交场景汇总回退）
+│   ├── problemText.ts    题面期望输出提取、文件名身份解析
+│   ├── loginCookie.ts    登录 Cookie 组装（裸值拼装 / 整段粘贴自动拆分）
+│   ├── networkRetry.ts   瞬时网络故障与重试幂等判定纯逻辑
 │   ├── languageUtils.ts  语言检测/文件扩展名
 │   └── webviewUtils.ts   题解 Webview HTML 生成
 ├── commands/
 │   └── solutionCommands.ts  题解命令（目前未被主流程使用/基本是死代码）
+├── unit/                 纯逻辑单测（node:test，不依赖 vscode；`pnpm run test:unit` 运行编译产物）
 └── test/
-    └── extension.test.ts
+    └── extension.test.ts （vscode-test 集成测试，glob 只匹配 out/test/**，勿把单测文件放进去）
 ```
 
 ### 登录/认证
 
-- 登录命令收集 `LEETCODE_SESSION` 与 `csrftoken`，组装为 `Cookie` 存入 `context.secrets`（不落盘）。
+- **一键自动登录（主路径）**：登录 webview 的「打开浏览器自动登录」→ `core/browserLogin.ts` 先探**系统默认浏览器**（`detectDefaultBrowser`：win32 读 `HKCU\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice` 的 ProgId、linux 走 `xdg-settings`；仅 Edge/Chrome 可驱动，Firefox/Tabbit 等归 other）→ 默认不可用/不可驱动时回退 `pickChromiumChannel`（已装 Edge→Chrome 顺序）并提示原因 → playwright-core（`vendor/playwright-core`，按需 require）以**全新隔离临时 profile** 打开 leetcode.cn 登录页 → 用户完成登录（密码/验证码/扫码/GitHub 均可）→ 1.5s 轮询 `context.cookies('leetcode.cn')` 直到 `LEETCODE_SESSION`+`csrftoken` 齐全（预算 10 分钟）→ finally 关浏览器+删临时目录。注意：临时 profile 与用户日常浏览器数据完全隔离，无法复用日常浏览器里已登录的会话（v20 App-Bound 所封），登录一次即取走。
+- **风控现状与应对（2026-09-14）**：LeetCode 登录页接了腾讯验证码（t.captcha.qq.com），会检测自动化浏览器环境——账号密码/滑块路径在受控窗口可能「安全验证失败，请刷新」。已做的缓解：launch 加官方参数 `--disable-blink-features=AutomationControlled`（消除 `navigator.webdriver` 标记，实测有效但**不保证**过深度探测）+ `--test-type`（抑制浏览器对敏感标记弹的"不受支持的命令行标记"黄色警告条，Selenium 同款标准做法，不影响 webdriver 隐藏）+ `chromiumSandbox: true`（Playwright 默认 false 会注入 `--no-sandbox` 触发警告条且真实降低安全性；带沙箱启动失败时自动无沙箱降级重试一次）+ 状态行与面板文案引导改用 **App 扫码登录**（不经过滑块组件，成功率最高，用户实测登录成功）。**不要**继续往更深的反检测对抗发展（伪造指纹/隐藏 CDP 等属风控对抗红线，商店审核与用户信任都过不去）；扫码仍失败的用户走手动整段 Cookie 粘贴。**不做**"读浏览器本地 Cookie 数据库"：Windows 上 Edge/Chrome 127+ 的 Cookie 值全是 v20 App-Bound 加密，第三方进程解密已被系统封堵（亦属恶意软件手法，勿再尝试）。用户关闭登录面板会经 `isAborted` 联动关闭浏览器窗口。
+- **手动粘贴（兜底）**：`LEETCODE_SESSION` 与 `csrftoken` 两列裸值或整段 Cookie（`utils/loginCookie.ts` 按键名自动拆分），组装为 `Cookie` 存入 `context.secrets`（不落盘）。
+- 两条路径共用 `completeLogin`：`setCookie` → `getUserProfile` 验证 `userStatus.isSignedIn` → 失败 `logout()`。登录 webview 支持把**整段 Cookie 粘贴到任一输入框**，由 `utils/loginCookie.ts` 的 `buildLeetCodeCookie` 按键名自动拆分。
+- 会话过期主动检测：HTTP 401 或响应 `status_code===1002` 时触发 `LeetCodeApi.onSessionExpired` → `notifySessionExpired()`（10 分钟限频 toast）；activate 时对已存 Cookie 后台校验一次 `userStatus.isSignedIn`。轮询判题遇 1002 直接抛错终止，不傻等 90 秒。
 - 请求时由 `leetcodeApi.getHeaders()` 读取 Cookie，并自动从 Cookie 提取 `csrftoken` 注入 `x-csrftoken` 请求头。
 - 用 `getUserProfile()` 的 `userStatus.isSignedIn` 校验是否登录成功。
 
@@ -111,13 +125,15 @@ src/
 
 4. **webview 渲染的可靠性**：早期实现依赖 webview 里 CDN 加载的 `marked`（新版可能 API 变化/加载失败）和脚本执行顺序（`processCodeTabs` 定义在页面底部，早期内联代码块脚本可能先于其执行），容易导致代码不渲染。**当前方案** `renderMarkdownToHtml()` 直接在扩展端（TypeScript）完成完整 Markdown → 静态 HTML 渲染（标题/列表/表格/图片/代码块等），不依赖 CDN marked，确保内容一定能显示。`codeMode: 'all'` 时保留全部语言并生成标签页（`preferredFirst` 时优先语言 Python3/Python → C/C++ → 其他 排首位并默认选中，用于官方题解，接近网页版切换体验；社区题解保持原文顺序）；`'preferred'` 时只保留优先语言（用于 question.solution 文字回退）。KaTeX 公式为 webview 内 CDN 可选增强（加载失败不影响内容显示）；highlight.js（`vendor/highlight.min.js`，GitHub 明/暗配色由页面脚本按主题亮度切换 CSS 变量）为本地资源随扩展打包，题解代码语法高亮不依赖网络。注意 `.vscodeignore` 排除了 `src/**`，本地资源必须放 `vendor/` 或 `out/` 才会进 VSIX。视频题解先尝试内嵌 `<video>`（`https://video.leetcode.cn/{资产id}.mp4`），若 CDN 防盗链拒绝（video 元素触发 error）自动降级为浏览器播放入口。
 
-5. **`marked` 依赖**：`package.json` 里保留了 `marked` 依赖，但主流程（extension.ts）已不 `require` 也不在 webview 加载它（只 `webviewUtils.ts` 死代码还引用 CDN）。不要误以为需要打包 `node_modules`。
+5. **运行时依赖现状**：唯一运行时依赖是 `playwright-core`（登录），运行时 `require(context.extensionPath + '/vendor/playwright-core')`，打包走 vendor 副本（见打包步骤第 6 条），VSIX 始终不含 node_modules。历史死依赖 `marked` 已于 0.1.9 移除（主流程不 require、webview 不加载，只 `webviewUtils.ts` 死代码注释提及 CDN），勿再加回。
+6. **TLS 证书校验为严格模式（0.1.9 起恢复）**：所有 https 请求不再 `rejectUnauthorized: false`。代理空闲切断导致的瞬断由"超时 + `agent:false` 禁复用 + `isTransientNetworkError` 幂等重试"兜底（判定表见 `utils/networkRetry.ts` 单测）。若用户环境有 MITM 代理导致证书报错，会透出原始错误信息，不要重新关闭校验。
+7. **判题在途忙碌锁与轮询预算**：`judgeInFlight` 全局锁防测试/提交并发（`tryBeginJudge` 占位、withProgress 回调 finally 释放）；`pollJudgeResult` 退避轮询（1s 起 ×1.5 封顶 5s，预算 ~90s），期间状态栏 `judgeStatusBar` 显示已等待秒数。新增判题类命令务必复用这套，不要另起 while 循环。
 
-6. **社区题解/pk检查脚本**：答题解析、注入若依赖外部 API，注意 `leetcodeApi.ts` 中 GraphQL 的字段名（如 `codeSnippets` 含 `lang`、`langSlug`、`code`）。
+8. **社区题解/pk检查脚本**：答题解析、注入若依赖外部 API，注意 `leetcodeApi.ts` 中 GraphQL 的字段名（如 `codeSnippets` 含 `lang`、`langSlug`、`code`）。
 
-7. **社区文章正文行尾**：部分社区题解文章（如《动画》系列）正文使用 `\r\n` 行尾，`renderMarkdownToHtml` 渲染前必须 `replace(/\r\n?/g, '\n')` 归一化，否则围栏代码块/标题匹配失败会显示原始 Markdown。
+9. **社区文章正文行尾**：部分社区题解文章（如《动画》系列）正文使用 `\r\n` 行尾，`renderMarkdownToHtml` 渲染前必须 `replace(/\r\n?/g, '\n')` 归一化，否则围栏代码块/标题匹配失败会显示原始 Markdown。
 
-8. **视频题解**：官方文章里的 `![xxx.mp4](资产id)` 指向 `video.leetcode.cn` 内部 CDN（防盗链+登录态，裸访问 403），webview 无法内嵌播放（与 playground iframe 同理）。已渲染为"播放视频题解"按钮，点击经 `openExternal` 消息在系统浏览器打开官方题解页。
+10. **视频题解**：官方文章里的 `![xxx.mp4](资产id)` 指向 `video.leetcode.cn` 内部 CDN（防盗链+登录态，裸访问 403），webview 无法内嵌播放（与 playground iframe 同理）。已渲染为"播放视频题解"按钮，点击经 `openExternal` 消息在系统浏览器打开官方题解页。
 
 ## 题解页数据流（当前实现）
 

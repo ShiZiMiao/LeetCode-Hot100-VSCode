@@ -86,6 +86,36 @@ import typing
 from collections import deque
 
 # ============================================
+# 调试自保护：把驱动自身从 pydevd 的 trace 中排除——驱动里的断点不触发、
+# 单步/步出直接穿过、调用栈隐藏，停止点只出现在题解代码文件里。
+# 主通道是扩展启动调试时注入的 PYDEVD_FILTERS 环境变量（对第 1 行代码即生效）；
+# 这里是运行期向已连上的 pydevd 直接注册排除规则的兜底通道（环境变量丢失时生效）。
+# 终端直接运行（非调试会话）时 get_global_debugger 为 None，自动跳过、零影响。
+# ============================================
+def _lc_exclude_debug_self():
+    try:
+        # 调试会话里 debugpy 引导时必然已 import pydevd；终端直跑则没有——
+        # 只查 sys.modules 不主动 import，避免裸环境报"未生效"噪声
+        _pydevd = sys.modules.get("pydevd")
+        if _pydevd is None:
+            return "not-debugging"
+        dbg = _pydevd.get_global_debugger()
+        if dbg is None:
+            return "not-debugging"
+        from _pydevd_bundle.pydevd_filtering import ExcludeFilter
+        me = os.path.abspath(__file__)
+        ff = dbg._files_filtering
+        if ff.exclude_by_filter(me, None) is True:
+            return "enabled"
+        ff.set_exclude_filters(list(ff._exclude_filters) + [ExcludeFilter(me, True, True)])
+        dbg._clear_caches()
+        return "enabled"
+    except Exception as ex:
+        return "failed: %r" % (ex,)
+
+_LC_DEBUG_FILTER = _lc_exclude_debug_self()
+
+# ============================================
 # 常用数据结构定义（LeetCode 判题环境默认提供，本地等价还原）
 # ============================================
 
@@ -325,6 +355,14 @@ if __name__ == "__main__":
     print("=" * 50)
     print("开始本地调试")
     print("=" * 50)
+    # 调试过滤状态（仅调试会话下有意义）
+    if _LC_DEBUG_FILTER == "enabled":
+        print("ℹ️ 调试过滤已生效：断点与单步只作用于题解代码文件，驱动对调试器不可见")
+    elif _LC_DEBUG_FILTER == "not-debugging":
+        pass
+    else:
+        print("⚠️ 调试过滤未生效（" + _LC_DEBUG_FILTER + "），单步可能仍会停进驱动文件；"
+              "若在扩展开发主机里看到此提示，请 Ctrl+R 重载后重试")
 
     lines = [line.strip() for line in test_cases.strip().split('\\n') if line.strip()]
 
@@ -365,6 +403,17 @@ if __name__ == "__main__":
                         result = result.to_list()
                     elif "TreeNode" in type_name and hasattr(result, "to_list"):
                         result = result.to_list()
+                    # 原地修改无返回值题（移动零/旋转图像/合并有序数组等）：LeetCode 判题
+                    # 比对的是函数执行后**被修改的入参**而非返回值。返回 None 且题面期望值
+                    # 非 null 时，取第一个可变参数（list/dict/ListNode/TreeNode）作为实际结果。
+                    # 两个可变参数时取第一个（如 merge 的 nums1 是被修改方且排前）。
+                    if result is None:
+                        exp_now = expected_meta[idx][1] if idx < len(expected_meta) and expected_meta[idx][0] else None
+                        if exp_now is not None:
+                            for a in args:
+                                if isinstance(a, (list, dict)) or hasattr(a, "to_list"):
+                                    result = a.to_list() if hasattr(a, "to_list") else a
+                                    break
                     print(f"示例{idx + 1} 输出: {result}")
                     if idx < len(expected_meta):
                         meta_ok, exp = expected_meta[idx]

@@ -10,9 +10,14 @@ import * as vm from 'vm';
 import { createHash } from 'crypto';
 import { AuthManager } from './core/authManager';
 import { LeetCodeApi, Question } from './core/leetcodeApi';
+import { loginWithBrowser, pickChromiumChannel, detectDefaultBrowser } from './core/browserLogin';
+import { spawnSync } from 'child_process';
 import { Hot100Provider } from './views/hot100Provider';
 import { selectLanguage, getExtension } from './utils/languageUtils';
 import { generateDebugFile } from './utils/debugUtils';
+import { buildJudgeReport } from './utils/judgeReport';
+import { extractExpectedOutputs, parseProblemFileName } from './utils/problemText';
+import { buildLeetCodeCookie } from './utils/loginCookie';
 
 /**
  * 清理题解 Markdown 内容中的 <iframe> 代码游玩区。
@@ -84,6 +89,70 @@ function showCodeError(fileUri: vscode.Uri, fullMessage: string): number | null 
 // 通过/失败与各字段用图标（✅/❌/📥/📤/🎯 等）标识。
 const judgeOutputChannel = vscode.window.createOutputChannel('LeetCode 判题结果');
 
+// 判题状态栏项：测试/提交的轮询等待期间显示已等待秒数（通知进度弹窗只有转圈没有时长感）
+const judgeStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+judgeStatusBar.command = 'leetcode.showRawJudge';
+judgeStatusBar.tooltip = 'LeetCode 判题进行中（点击查看最近一次原始判题响应）';
+
+// 判题在途忙碌锁：测试/提交共用一把。并发 runCode 会互相覆盖"最近一次判题响应"，
+// 重复提交还会产生多条提交记录；命令入口同步占位、判题结束（成功/超时/异常）释放。
+let judgeInFlight = false;
+function tryBeginJudge(): boolean {
+	if (judgeInFlight) {
+		vscode.window.showWarningMessage('已有测试/提交在判题中，请等待结果后再操作');
+		return false;
+	}
+	judgeInFlight = true;
+	return true;
+}
+
+/**
+ * 判题结果轮询：1s 起步 ×1.5 指数退避封顶 5s，总预算 ~90s（旧实现固定 2s×15=30s，
+ * 慢题判题会假性超时）；期间状态栏显示已等待秒数。超时返回 undefined 由调用方提示。
+ */
+async function pollJudgeResult(api: LeetCodeApi, judgeId: string): Promise<any | undefined> {
+	const budgetMs = 90000;
+	let waited = 0;
+	let delay = 1000;
+	judgeStatusBar.text = '$(sync~spin) LeetCode 判题中…';
+	judgeStatusBar.show();
+	try {
+		while (waited < budgetMs) {
+			await new Promise(resolve => setTimeout(resolve, delay));
+			waited += delay;
+			judgeStatusBar.text = `$(sync~spin) LeetCode 判题中… ${Math.round(waited / 1000)}s`;
+			const check = await api.checkSubmission(judgeId);
+			if (check.state === 'SUCCESS') {
+				return check;
+			}
+			// 会话过期（status_code 1002）判题永远等不来，提前终止并报错（同时 onSessionExpired 会 toast）
+			if (check?.status_code === 1002) {
+				throw new Error('LeetCode 会话已过期，请重新登录后再试');
+			}
+			delay = Math.min(Math.round(delay * 1.5), 5000);
+		}
+		return undefined;
+	} finally {
+		judgeStatusBar.hide();
+	}
+}
+
+// 会话过期主动提示：服务端判定未登录（HTTP 401 / status_code 1002）时限频 toast，
+// 避免过期会话把每个请求都弹一遍
+let sessionExpiredNotifiedAt = 0;
+function notifySessionExpired(): void {
+	const now = Date.now();
+	if (now - sessionExpiredNotifiedAt < 10 * 60 * 1000) {
+		return;
+	}
+	sessionExpiredNotifiedAt = now;
+	vscode.window.showWarningMessage('LeetCode 登录已过期（会话失效），请重新登录', '登录').then(choice => {
+		if (choice === '登录') {
+			vscode.commands.executeCommand('leetcode.login');
+		}
+	});
+}
+
 // 每题只允许打开一个页面：同一题的题面页/题解页复用现有面板（重复点击仅聚焦），key 为 titleSlug。
 // pending 集合做**同步**占位：两次快速连点时去重检查都可能在各自异步阶段完成前执行，
 // 仅靠 Map 存在性会竞态双开；命令入口同步登记后可拦住第二个调用
@@ -91,66 +160,6 @@ const problemPanels = new Map<string, vscode.WebviewPanel>();
 const solutionPanels = new Map<string, vscode.WebviewPanel>();
 const pendingProblemOpens = new Set<string>();
 const pendingSolutionOpens = new Set<string>();
-
-const STATUS_ZH: Record<string, string> = {
-	'Accepted': '通过',
-	'Wrong Answer': '解答错误',
-	'Time Limit Exceeded': '超出时间限制',
-	'Memory Limit Exceeded': '超出内存限制',
-	'Output Limit Exceeded': '输出超出限制',
-	'Runtime Error': '运行时错误',
-	'Compile Error': '编译错误'
-};
-
-function formatJudgeValue(value: any): string {
-	if (value === undefined || value === null) { return ''; }
-	// runCode 的 code_answer/expected_code_answer 每项自带结尾换行、数组还常以空串收尾，
-	// 逐项去尾后拼接仍可能带结尾 \n（join 在空串前插入的分隔符），必须整串再去一次尾，
-	// 否则 Output 段间出现双空行
-	const trimEnd = (s: string) => s.replace(/\s+$/, '');
-	if (Array.isArray(value)) {
-		return trimEnd(value.map(item => trimEnd(typeof item === 'object' && item !== null ? JSON.stringify(item) : String(item))).join('\n'));
-	}
-	if (typeof value === 'object') { return JSON.stringify(value); }
-	return trimEnd(String(value));
-}
-
-function buildJudgeReport(check: any, inputFallback?: string, ok?: boolean): { summary: string; detail: string } {
-	const status = String(check.status_msg || '');
-	const statusLabel = STATUS_ZH[status] ? `${STATUS_ZH[status]} (${status})` : (status || '未知状态');
-	const passed = (check.total_correct !== undefined && check.total_testcases !== undefined)
-		? `，${check.total_correct} / ${check.total_testcases} 个用例通过`
-		: '';
-	const summary = statusLabel + passed;
-
-	const lines: string[] = [`${ok ? '✅' : '❌'}【判题结果】${summary}`];
-	if (check.status_runtime && check.status_runtime !== 'N/A') { lines.push(`🕐 运行时间: ${check.status_runtime}`); }
-	if (check.status_memory && check.status_memory !== 'N/A') { lines.push(`💾 内存消耗: ${check.status_memory}`); }
-	else if (typeof check.memory === 'number' && check.memory > 0) {
-		// 判题响应里 memory 为字节数，按 KB/MB 自适应展示
-		lines.push(`💾 内存消耗: ${check.memory >= 1024 * 1024 ? (check.memory / 1024 / 1024).toFixed(1) + ' MB' : (check.memory / 1024).toFixed(1) + ' KB'}`);
-	}
-	// compare_result 为逐用例 0/1 串，第一个 0 即最先未通过的用例
-	if (typeof check.compare_result === 'string' && check.compare_result.length > 0) {
-		const firstFail = check.compare_result.indexOf('0');
-		if (firstFail >= 0) { lines.push(`🔍 首个未通过用例: 第 ${firstFail + 1} 个`); }
-	}
-	const compileError = String(check.full_compile_error || check.compile_error || '').trim();
-	const runtimeError = String(check.full_runtime_error || check.error || '').trim();
-	// Output 面板是纯文本、不支持折叠，因此原始响应不写进通道；
-	// 缓存在 lastRawJudgeResponse，经 toast 按钮或命令在 JSON 编辑器中按需打开（自带折叠）
-	const input = formatJudgeValue(check.input ?? check.last_testcase ?? check.test_case) || formatJudgeValue(inputFallback);
-	if (input) { lines.push(`\n📥【输入】\n${input}`); }
-	// 提交判题的输出字段是 code_output（runCode 用 code_answer/coded_answer）
-	const output = formatJudgeValue(check.code_answer ?? check.coded_answer ?? check.code_output ?? check.total_output);
-	if (output) { lines.push(`\n📤【输出】\n${output}`); }
-	const expected = formatJudgeValue(check.expected_output ?? check.expected_code_answer);
-	if (expected) { lines.push(`\n🎯【预期结果】\n${expected}`); }
-	if (compileError) { lines.push(`\n⚠️【编译错误】\n${compileError}`); }
-	if (runtimeError) { lines.push(`\n💥【运行时错误】\n${runtimeError}`); }
-	lines.push(`\n💡（原始判题响应：点击提示中的"原始判题响应"按钮，或运行命令 "LeetCode: 查看最近一次原始判题响应"，在 JSON 编辑器内可折叠查看）`);
-	return { summary, detail: lines.join('\n') };
-}
 
 // 最近一次判题的原始响应对象（JSON 编辑器按需展示用，支持折叠）
 let lastRawJudgeResponse: any;
@@ -267,12 +276,12 @@ async function resolveProblemFromFile(
 	if (!currentProblem) {
 		return currentProblem;
 	}
-	const m = fileName.match(/^(\d+)_([a-z0-9-]+?)(?:_debug)?\./i);
-	if (!m || m[2] === currentProblem.titleSlug) {
+	const parsed = parseProblemFileName(fileName);
+	if (!parsed || parsed.titleSlug === currentProblem.titleSlug) {
 		return currentProblem;
 	}
 	try {
-		const data = await api.getQuestionContent(m[2]);
+		const data = await api.getQuestionContent(parsed.titleSlug);
 		const q = data?.data?.question;
 		if (!q) {
 			return currentProblem;
@@ -284,7 +293,7 @@ async function resolveProblemFromFile(
 		const extMatch = fileName.match(/\.([a-z]+)$/i);
 		const ext = extMatch ? extMatch[1].toLowerCase() : '';
 		const problem = {
-			titleSlug: q.titleSlug || m[2],
+			titleSlug: q.titleSlug || parsed.titleSlug,
 			questionId: q.questionId,
 			lang: langMap[ext] || currentProblem.lang,
 			testCases: q.exampleTestcases || q.sampleTestCase || currentProblem.testCases || ''
@@ -294,52 +303,6 @@ async function resolveProblemFromFile(
 	} catch {
 		return currentProblem;
 	}
-}
-
-/**
- * 从题目 HTML（translatedContent/content）中按顺序提取各示例的期望输出。
- * 示例格式：<pre>… 输入：… \n 输出：value \n 解释：… </pre>
- */
-function extractExpectedOutputs(html: string): string[] {
-	if (!html) {
-		return [];
-	}
-	const entityMap: Record<string, string> = {
-		'&quot;': '"',
-		'&#34;': '"',
-		'&gt;': '>',
-		'&lt;': '<',
-		'&amp;': '&',
-		'&#39;': "'",
-		'&nbsp;': ' ',
-		'&thinsp;': ' ',
-		'&#160;': ' '
-	};
-	const outputs: string[] = [];
-	// 题面示例有两种排版：<pre> 块或 <div class="example-block"> + 段落；
-	// 剥离标签后按「示例 N / Example N」切段，段内取第一个「输出」的值，
-	// 值以 解释/输入/提示/Constraints 等为边界（有些示例没有解释，末尾会跟提示/进阶）
-	const text = html
-		.replace(/<br\s*\/?>/gi, '\n')
-		.replace(/<[^>]+>/g, ' ')
-		.replace(/&quot;|&#34;|&gt;|&lt;|&amp;|&#39;|&nbsp;|&thinsp;|&#160;/g, (m) => entityMap[m] ?? m);
-	const exampleRe = /(?:示例|Example)\s*\d/gi;
-	const segments: string[] = [];
-	let cursor = 0;
-	let exampleMatch: RegExpExecArray | null;
-	while ((exampleMatch = exampleRe.exec(text)) !== null) {
-		segments.push(text.slice(cursor, exampleMatch.index));
-		cursor = exampleRe.lastIndex;
-	}
-	segments.push(text.slice(cursor));
-	const valueRe = /(?:输出|Output)\s*[：:]\s*([\s\S]*?)(?=\s*(?:解释|Explanation|输入|Input|示例|Example|提示|Constraints|进阶|Follow-up|说明)\s*[：:]?|$)/i;
-	for (const segment of segments) {
-		const m = valueRe.exec(segment);
-		if (m && m[1].trim()) {
-			outputs.push(m[1].trim());
-		}
-	}
-	return outputs;
 }
 
 /**
@@ -789,6 +752,25 @@ export function activate(context: vscode.ExtensionContext) {
 	const leetCodeApi = new LeetCodeApi(authManager);
 	const hot100Provider = new Hot100Provider(leetCodeApi);
 
+	// 服务端判定会话失效时主动提示重新登录（toast 内建限频，避免每个过期请求都弹）
+	leetCodeApi.onSessionExpired = () => notifySessionExpired();
+
+	// 已存 Cookie 时后台校验一次会话有效性：覆盖"上次存的 Cookie 本次启动已过期、
+	// 但用户还没触发任何需要登录的操作"的空窗（校验失败/网络异常静默，不打扰）
+	void (async () => {
+		if (!(await authManager.isLoggedIn())) {
+			return;
+		}
+		try {
+			const profile = await leetCodeApi.getUserProfile();
+			if (!profile?.data?.userStatus?.isSignedIn) {
+				notifySessionExpired();
+			}
+		} catch {
+			/* 网络异常或未登录提示已给，静默 */
+		}
+	})();
+
 	vscode.window.registerTreeDataProvider('leetcode-hot100', hot100Provider);
 
 	// 创建状态栏项显示登录状态
@@ -797,6 +779,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(statusBarItem);
 	context.subscriptions.push(errorDiagnostics);
 	context.subscriptions.push(judgeOutputChannel);
+	context.subscriptions.push(judgeStatusBar);
 	// 扩展停用时关闭已打开的题面/题解面板（Map 里只保留活跃面板的语义靠 onDidDispose 维护）
 	context.subscriptions.push({ dispose: () => { problemPanels.forEach(p => p.dispose()); solutionPanels.forEach(p => p.dispose()); } });
 	updateStatusBar(authManager);
@@ -909,93 +892,197 @@ export function activate(context: vscode.ExtensionContext) {
 			</head>
 			<body>
 				<h1>🔐 LeetCode 登录</h1>
-				
-				<div class="step">
-					<span class="step-number">1</span>
-					<strong>打开 LeetCode 网站并登录</strong>
-					<br><br>
-					<button onclick="openLeetCode()">打开 LeetCode 网站</button>
-				</div>
 
 				<div class="step">
-					<span class="step-number">2</span>
-					<strong>获取 Cookie 值</strong>
-					<br><br>
-					登录后，按 <code>F12</code> 打开开发者工具，然后：
-					<ol>
-						<li>点击顶部的 <code>Application</code>（应用程序）标签</li>
-						<li>在左侧栏找到 <code>Storage</code> → <code>Cookies</code> → <code>https://leetcode.cn</code></li>
-						<li>在右侧表格中找到下面两个 Cookie，<strong>双击 Value 列复制值</strong></li>
-					</ol>
+					<strong>浏览器一键登录（推荐）</strong>
+					<div class="hint">将用系统的 Edge/Chrome 打开 LeetCode 登录窗口——一个全新的<strong>隔离临时配置</strong>，仅用于本次登录，完成后立即删除；插件不经手你的账号密码，也不读取日常浏览器数据，登录完成后仅读取 leetcode.cn 的两条会话 Cookie。</div>
+					<div class="hint">提示：若页面出现"安全验证失败"，推荐在登录窗口内改用<strong>扫码登录</strong>（LeetCode App 扫一扫，不走滑块验证）。</div>
+					<button id="autoBtn" onclick="autoLogin()">🌐 打开浏览器自动登录</button>
+					<div id="autoStatus"></div>
 				</div>
 
-				<div class="step">
-					<span class="step-number">3</span>
-					<strong>粘贴 Cookie 值</strong>
-					
-					<label for="sessionInput">LEETCODE_SESSION 的值：</label>
-					<input type="text" id="sessionInput" placeholder="粘贴 LEETCODE_SESSION 的值（一长串字符）" />
-					<div class="hint">这是一个很长的字符串，通常以 eyJ 开头</div>
-					
-					<label for="csrfInput">csrftoken 的值：</label>
-					<input type="text" id="csrfInput" placeholder="粘贴 csrftoken 的值" />
-					<div class="hint">这是一个较短的字符串</div>
-					
-					<br>
-					<button onclick="submitCookie()">确认登录</button>
-					<div id="message"></div>
-				</div>
+				<details id="manualArea">
+					<summary><strong>手动粘贴 Cookie 登录</strong>（自动登录不可用时的兜底）</summary>
+
+					<div class="step">
+						<span class="step-number">1</span>
+						<strong>打开 LeetCode 网站并登录</strong>
+						<br><br>
+						<button onclick="openLeetCode()">打开 LeetCode 网站</button>
+					</div>
+
+					<div class="step">
+						<span class="step-number">2</span>
+						<strong>获取 Cookie 值</strong>
+						<br><br>
+						登录后，按 <code>F12</code> 打开开发者工具，然后：
+						<ol>
+							<li>点击顶部的 <code>Application</code>（应用程序）标签</li>
+							<li>在左侧栏找到 <code>Storage</code> → <code>Cookies</code> → <code>https://leetcode.cn</code></li>
+							<li>在右侧表格中找到下面两个 Cookie，<strong>双击 Value 列复制值</strong></li>
+						</ol>
+					</div>
+
+					<div class="step">
+						<span class="step-number">3</span>
+						<strong>粘贴 Cookie 值</strong>
+
+						<label for="sessionInput">LEETCODE_SESSION 的值：</label>
+						<input type="text" id="sessionInput" placeholder="粘贴 LEETCODE_SESSION 的值（一长串字符），或整段 Cookie" />
+						<div class="hint">这是一个很长的字符串，通常以 eyJ 开头；也可以把浏览器里整段 Cookie（含 LEETCODE_SESSION= 与 csrftoken=）直接粘到任一输入框，自动拆分</div>
+
+						<label for="csrfInput">csrftoken 的值：</label>
+						<input type="text" id="csrfInput" placeholder="粘贴 csrftoken 的值（已整段粘贴则可留空）" />
+						<div class="hint">这是一个较短的字符串</div>
+
+						<br>
+						<button onclick="submitCookie()">确认登录</button>
+						<div id="message"></div>
+					</div>
+				</details>
 
 				<script>
 					const vscode = acquireVsCodeApi();
-					
+
+					function autoLogin() {
+						document.getElementById('autoBtn').disabled = true;
+						setAutoStatus('正在启动浏览器…', 'hint');
+						vscode.postMessage({ type: 'autoLogin' });
+					}
+
+					function setAutoStatus(html, cls) {
+						document.getElementById('autoStatus').innerHTML = '<span class="' + cls + '">' + html + '</span>';
+					}
+
 					function openLeetCode() {
 						vscode.postMessage({ type: 'openBrowser' });
 					}
-					
+
 					function submitCookie() {
 						const session = document.getElementById('sessionInput').value.trim();
 						const csrf = document.getElementById('csrfInput').value.trim();
-						
-						if (!session) {
-							document.getElementById('message').innerHTML = '<span class="error">请输入 LEETCODE_SESSION 的值</span>';
+
+						if (!session && !csrf) {
+							document.getElementById('message').innerHTML = '<span class="error">请粘贴 LEETCODE_SESSION 与 csrftoken 的值（或整段 Cookie）</span>';
 							return;
 						}
-						if (!csrf) {
-							document.getElementById('message').innerHTML = '<span class="error">请输入 csrftoken 的值</span>';
-							return;
-						}
-						
-						// 自动组装 Cookie 格式
-						const cookie = 'LEETCODE_SESSION=' + session + '; csrftoken=' + csrf;
+						// 原样传给扩展端统一解析：裸值两列照常组装；
+						// 整段 Cookie 粘贴（含 KEY=VALUE）由扩展端按键名自动拆分
 						document.getElementById('message').innerHTML = '<span class="success">正在验证...</span>';
-						vscode.postMessage({ type: 'login', cookie: cookie });
+						vscode.postMessage({ type: 'login', session: session, csrf: csrf });
 					}
+
+					// 扩展端回推的自动登录状态
+					window.addEventListener('message', (event) => {
+						const msg = event.data;
+						if (!msg || msg.type !== 'autoStatus') {
+							return;
+						}
+						setAutoStatus(msg.text, msg.kind || 'hint');
+						document.getElementById('autoBtn').disabled = (msg.state === 'running');
+						if (msg.openManual) {
+							document.getElementById('manualArea').open = true;
+						}
+					});
 				</script>
 			</body>
 			</html>
 		`;
+
+		// 共享登录收尾（自动/手动两条路径复用）：存 Cookie → 服务端校验 → 成功关面板/失败清态
+		const completeLogin = async (cookie: string): Promise<boolean> => {
+			try {
+				await authManager.setCookie(cookie);
+				const profile = await leetCodeApi.getUserProfile();
+				// 适配新的 userStatus API 响应
+				if (profile && profile.data && profile.data.userStatus && profile.data.userStatus.isSignedIn) {
+					const user = profile.data.userStatus;
+					vscode.window.showInformationMessage(`登录成功！欢迎 ${user.realName || user.username}`);
+					panel.dispose();
+					return true;
+				}
+				vscode.window.showErrorMessage('登录失败：Cookie 无效或已过期，请重新获取');
+				await authManager.logout();
+				return false;
+			} catch (error) {
+				vscode.window.showErrorMessage(`登录失败: ${errMsg(error)}`);
+				await authManager.logout();
+				return false;
+			}
+		};
+
+		// 自动登录并发保护 + 面板关闭联动（用户关掉登录面板 → 终止等待并关闭浏览器窗口）
+		let autoLoginRunning = false;
+		let loginPanelDisposed = false;
+		panel.onDidDispose(() => { loginPanelDisposed = true; });
 
 		// 处理Webview消息
 		panel.webview.onDidReceiveMessage(async (message) => {
 			if (message.type === 'openBrowser') {
 				vscode.env.openExternal(vscode.Uri.parse('https://leetcode.cn/accounts/login/'));
 			} else if (message.type === 'login') {
+				// 两列裸值照常组装；整段 Cookie 粘贴（含 KEY=VALUE）自动按键名拆分
+				const cookie = buildLeetCodeCookie(message.session || '', message.csrf || '');
+				if (!cookie) {
+					vscode.window.showWarningMessage('未能从粘贴内容解析出 LEETCODE_SESSION 与 csrftoken，请分别粘贴两个值，或把整段 Cookie 粘到任一输入框');
+					return;
+				}
+				await completeLogin(cookie);
+			} else if (message.type === 'autoLogin') {
+				if (autoLoginRunning) {
+					return;
+				}
+				autoLoginRunning = true;
+				const post = (state: 'running' | 'idle', text: string, kind?: string, openManual?: boolean) => {
+					void panel.webview.postMessage({ type: 'autoStatus', state, text, kind, openManual });
+				};
 				try {
-					await authManager.setCookie(message.cookie);
-					const profile = await leetCodeApi.getUserProfile();
-					// 适配新的 userStatus API 响应
-					if (profile && profile.data && profile.data.userStatus && profile.data.userStatus.isSignedIn) {
-						const user = profile.data.userStatus;
-						vscode.window.showInformationMessage(`登录成功！欢迎 ${user.realName || user.username}`);
-						panel.dispose();
-					} else {
-						vscode.window.showErrorMessage('登录失败：Cookie 无效或已过期，请重新获取');
-						await authManager.logout();
+					// 优先用系统默认浏览器（仅 Edge/Chrome 可被驱动接管）；默认是 Firefox/其他
+					// Chromium 分支（Tabbit/Opera 等）时回退到已装的标准 Edge/Chrome 并提示原因
+					const def = detectDefaultBrowser((cmd, args) => {
+						const r = spawnSync(cmd, args, { encoding: 'utf8' });
+						return { status: r.status, stdout: r.stdout || '' };
+					});
+					const channel = def.kind === 'chromium' ? def.channel : pickChromiumChannel(fs.existsSync, process.platform, process.env);
+					if (!channel) {
+						post('idle', '未检测到 Microsoft Edge 或 Google Chrome，无法自动打开登录窗口，请使用下方手动粘贴方式。', 'error', true);
+						return;
 					}
-				} catch (error) {
-					vscode.window.showErrorMessage(`登录失败: ${errMsg(error)}`);
-					await authManager.logout();
+					if (def.kind === 'other') {
+						post('running', `默认浏览器（${def.hint}）无法被自动接管，改用系统 ${channel === 'msedge' ? 'Edge' : 'Chrome'} 打开登录窗口…`);
+					} else {
+						post('running', def.kind === 'chromium' ? `正在用默认浏览器（${channel === 'msedge' ? 'Edge' : 'Chrome'}）启动登录窗口…` : '正在启动浏览器…');
+					}
+					const result = await loginWithBrowser({
+						channel,
+						// vendor 副本随扩展打包（vsce 带 --no-dependencies，不用 node_modules），
+						// 仅登录时按需加载，不影响扩展激活耗时
+						requirePlaywright: () => require(path.join(context.extensionPath, 'vendor/playwright-core')),
+						onStatus: (s) => {
+							if (s === 'launching') {
+								// 渠道来源文案（默认浏览器/回退）已在启动前发过，此处不覆盖
+							} else if (s === 'waiting-login') {
+								post('running', '浏览器窗口已打开，请在窗口中完成登录（支持密码/扫码/第三方）。若提示"安全验证失败"，建议点登录框下方的二维码图标改用 App 扫码登录（不经过滑块验证）…');
+							} else {
+								post('running', '已获取登录信息，正在收尾…', 'success');
+							}
+						},
+						isAborted: () => loginPanelDisposed
+					});
+					if (result.status === 'success' && result.cookie) {
+						const ok = await completeLogin(result.cookie);
+						if (!ok && !loginPanelDisposed) {
+							post('idle', '登录校验未通过，可重试自动登录，或使用手动粘贴方式。', 'error', true);
+						}
+					} else if (result.status === 'canceled') {
+						post('idle', '自动登录已取消（登录窗口被关闭）。可重试，或使用手动粘贴方式。', 'hint', true);
+					} else if (result.status === 'timeout') {
+						post('idle', '等待登录超时（10 分钟）。可重试，或使用手动粘贴方式。', 'error', true);
+					} else {
+						post('idle', '启动浏览器失败：' + (result.message || '未知错误') + '。请使用手动粘贴方式。', 'error', true);
+					}
+				} finally {
+					autoLoginRunning = false;
 				}
 			}
 		});
@@ -2099,6 +2186,10 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 		// 重新运行时清除上一次的错误标注
 		errorDiagnostics.delete(editor.document.uri);
 
+		// 在途忙碌锁：判题发起前同步占位，防快速连点并发 runCode/覆盖判题详情
+		if (!tryBeginJudge()) {
+			return;
+		}
 		vscode.window.withProgress({
 			location: vscode.ProgressLocation.Notification,
 			title: "正在运行测试...",
@@ -2119,24 +2210,21 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 					return;
 				}
 
-				// 轮询获取结果
-				let attempts = 0;
-				while (attempts < 15) {
-					await new Promise(resolve => setTimeout(resolve, 2000));
-					const check = await leetCodeApi.checkSubmission(interpretId);
-					if (check.state === 'SUCCESS') {
-						reportJudgeResult('测试', check, {
-							ok: check.run_success && !!check.correct_answer,
-							fileUri: editor.document.uri,
-							inputFallback: problem.testCases
-						});
-						return;
-					}
-					attempts++;
+				// 轮询获取结果（退避至 ~90s，状态栏显示等待时长）
+				const check = await pollJudgeResult(leetCodeApi, interpretId);
+				if (check) {
+					reportJudgeResult('测试', check, {
+						ok: check.run_success && !!check.correct_answer,
+						fileUri: editor.document.uri,
+						inputFallback: problem.testCases
+					});
+				} else {
+					vscode.window.showWarningMessage('测试超时：判题未在 90 秒内返回，可稍后重试');
 				}
-				vscode.window.showWarningMessage('测试超时');
 			} catch (error) {
 				vscode.window.showErrorMessage(`测试出错: ${errMsg(error)}`);
+			} finally {
+				judgeInFlight = false;
 			}
 		});
 	});
@@ -2177,6 +2265,10 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 		// 重新提交时清除上一次的错误标注
 		errorDiagnostics.delete(editor.document.uri);
 
+		// 在途忙碌锁：判题发起前同步占位，防快速连点重复提交
+		if (!tryBeginJudge()) {
+			return;
+		}
 		vscode.window.withProgress({
 			location: vscode.ProgressLocation.Notification,
 			title: "正在提交到 LeetCode...",
@@ -2195,29 +2287,33 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 					vscode.window.showErrorMessage('提交失败: ' + JSON.stringify(result));
 					return;
 				}
+				const submissionUrl = `https://leetcode.cn/problems/${problem.titleSlug}/submissions/${submissionId}/`;
 
-				// 轮询获取结果
-				let attempts = 0;
-				while (attempts < 15) {
-					await new Promise(resolve => setTimeout(resolve, 2000));
-					const check = await leetCodeApi.checkSubmission(submissionId);
-					if (check.state === 'SUCCESS') {
-						reportJudgeResult('提交', check, {
-							ok: check.status_msg === 'Accepted',
-							fileUri: editor.document.uri,
-							submissionUrl: `https://leetcode.cn/problems/${problem.titleSlug}/submissions/${submissionId}/`
-						});
-						// 通过后刷新题目列表以更新状态
-						if (check.status_msg === 'Accepted') {
-							hot100Provider.refresh();
-						}
-						return;
+				// 轮询获取结果（退避至 ~90s，状态栏显示等待时长）
+				const check = await pollJudgeResult(leetCodeApi, submissionId);
+				if (check) {
+					reportJudgeResult('提交', check, {
+						ok: check.status_msg === 'Accepted',
+						fileUri: editor.document.uri,
+						submissionUrl
+					});
+					// 通过后刷新题目列表以更新状态
+					if (check.status_msg === 'Accepted') {
+						hot100Provider.refresh();
 					}
-					attempts++;
+				} else {
+					const choice = await vscode.window.showWarningMessage(
+						'提交超时：判题未在 90 秒内返回，结果可在 LeetCode 提交页查看',
+						'打开提交页'
+					);
+					if (choice === '打开提交页') {
+						vscode.env.openExternal(vscode.Uri.parse(submissionUrl));
+					}
 				}
-				vscode.window.showWarningMessage('提交超时，请在LeetCode网站查看结果');
 			} catch (error) {
 				vscode.window.showErrorMessage(`提交出错: ${errMsg(error)}`);
+			} finally {
+				judgeInFlight = false;
 			}
 		});
 	});
@@ -2305,7 +2401,18 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 					request: 'launch',
 					program: debugFilePath,
 					cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? dirPath,
-					console: 'internalConsole'
+					console: 'internalConsole',
+					// pydevd 文件过滤器（主通道；debugpy 后端在 debuggee 进程启动时读取）：
+					// 命中的文件帧完全不 trace——断点不触发、单步直接穿过、调用栈隐藏。
+					// 把驱动自身排除后，调试的停止点只出现在题解代码文件里（F10 步出函数
+					// 不会停进 debug.py，而是直接跑到下一个断点/结束），与"断点打在题解文件"
+					// 的 importlib 机制配套。绝对路径匹配为逐段 normcase + 盘符大小写不敏感。
+					// 兜底通道：生成的驱动启动时自行向 pydevd 注册同一路径的排除规则
+					// （debugUtils 的 _lc_exclude_debug_self），env 未传到时会在那里补上并
+					// 在调试控制台打状态行。修改这两处后务必重载扩展主机，旧代码不会带过滤。
+					env: {
+						PYDEVD_FILTERS: JSON.stringify({ [debugFilePath]: true })
+					}
 				});
 				if (!started) {
 					vscode.window.showErrorMessage('调试会话启动失败，请检查 Python 解释器是否已配置（Python 扩展插件）');
