@@ -81,7 +81,7 @@ code --install-extension "D:/code/lc/Hot100-for-VSCode/Hot100-for-VSCode.vsix" -
 
 ```
 src/
-├── extension.ts          扩展入口，注册全部命令与 webview 渲染逻辑（主体）
+├── extension.ts          扩展入口，注册全部命令与判题/调试/面板编排（0.2.0 模块化后主体）
 ├── core/
 │   ├── authManager.ts    Cookie 会话管理（存在 context.secrets）
 │   ├── browserLogin.ts   浏览器一键登录（playwright-core 走 vendor 副本，驱动系统 Edge/Chrome 临时 profile 读 Cookie）
@@ -89,21 +89,30 @@ src/
 ├── data/
 │   └── hot100Data.ts     Hot 100 题目静态数据
 ├── views/
-│   └── hot100Provider.ts TreeView 数据提供者
-├── utils/                （judgeReport/problemText/loginCookie/networkRetry 为无 vscode 依赖的纯逻辑，src/unit 单测覆盖）
+│   ├── hot100Provider.ts TreeView 数据提供者（进度/状态筛选/错题回顾队列，判题结果经 recordJudgeResult 实时更新）
+│   └── problemPanel.ts   题面/题解 webview：generatePanelHtml + Markdown 渲染器全家（公式/动画播放器/代码高亮）+ 图片本地化 + 播放器资源
+├── judgeFeedback.ts      判题反馈（上报/输出通道/编辑器诊断/状态栏/在途锁/pollJudgeResult 轮询）
+├── shared/
+│   └── webviewMessages.ts webview ↔ 扩展消息协议类型（webview 端是模板字符串 JS，只能靠类型做扩展端校验与文档）
+├── utils/                （judgeReport/problemText/loginCookie/networkRetry/progressStats/wrongQueue/htmlUtil 为无 vscode 依赖的纯逻辑，src/unit 单测覆盖）
 │   ├── debugUtils.ts     本地调试文件生成（Python 驱动含原地入参比对 + pydevd 自排除注册）
-│   ├── judgeReport.ts    判题报告纯逻辑（逐用例分组 / 提交场景汇总回退）
+│   ├── judgeReport.ts    判题报告纯逻辑（逐用例分组 / 提交场景汇总回退 / 逐用例结构化信息提取）
 │   ├── problemText.ts    题面期望输出提取、文件名身份解析
 │   ├── loginCookie.ts    登录 Cookie 组装（裸值拼装 / 整段粘贴自动拆分）
 │   ├── networkRetry.ts   瞬时网络故障与重试幂等判定纯逻辑
+│   ├── progressStats.ts  刷题进度统计/状态筛选纯逻辑
+│   ├── wrongQueue.ts     错题回顾队列纯逻辑（去重/排序/限量/时间格式化）
+│   ├── htmlUtil.ts       escapeHtml/errMsg/formatArticleDate 共用工具
 │   ├── languageUtils.ts  语言检测/文件扩展名
-│   └── webviewUtils.ts   题解 Webview HTML 生成
+│   └── webviewUtils.ts   题解 Webview HTML 生成（死代码）
 ├── commands/
 │   └── solutionCommands.ts  题解命令（目前未被主流程使用/基本是死代码）
 ├── unit/                 纯逻辑单测（node:test，不依赖 vscode；`pnpm run test:unit` 运行编译产物）
 └── test/
     └── extension.test.ts （vscode-test 集成测试，glob 只匹配 out/test/**，勿把单测文件放进去）
 ```
+
+> `scripts/release.mjs`（`pnpm release <version>`）是发版自动化脚本（tsconfig 已 exclude scripts），临时脚本不要放在 src/ 下。
 
 ### 登录/认证
 
@@ -142,6 +151,12 @@ src/
 2. `getSolutionArticles` → 社区题解列表（可点击逐篇查看）。
 3. **官方题解（含代码）**：取 `byLeetcode: true` 的官方文章全文，用 `renderMarkdownToHtml(content, 'all', true)` 渲染（多语言代码标签页，优先语言默认选中）。
 4. **社区精选题解（含代码）**：取最高赞的非官方社区题解全文，用 `renderMarkdownToHtml(content, 'all')` 渲染（保留全部语言标签页）。
+
+## 判题失败用例与自定义用例
+
+- **失败用例本地调试**：判题失败后 toast 附「本地调试失败用例」按钮（命令 `leetcode.debugFailedCase`），把失败用例的输入/期望写入调试驱动再启动本地调试；多失败用例时 QuickPick 选择。期望值只传该用例（不掺入题面示例索引对齐），复用 `runDebugWithCases`（与 `leetcode.debug` 共用，已含 Python 驱动/非 Python 模板文案分支）。
+- **自定义用例在线测试**：命令 `leetcode.customTest` 生成 `<题解目录>/debug/customcase_{id}_{slug}.txt`（每行一个 JSON 参数值，与 `data_input` 格式一致；文件名以字母开头，`parseProblemFileName` 不会误解析），编辑后 Ctrl+S 自动 runCode 判题——保存钩子按 `customCaseFiles` 路径登记表匹配，只对扩展创建的用例文件生效；同题再次运行命令可立即重跑当前内容。
+- 逐用例信息由 `collectJudgeCaseInfos`（judgeReport.ts 纯逻辑）从判题响应提取，测试/提交/自定义用例共用，与 raw 响应一起缓存在模块级 `lastJudgeCases`（含 titleSlug 防串题校验）。
 
 ## 调试方式（开发模式）
 

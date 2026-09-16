@@ -1,161 +1,184 @@
 {
-  "name": "leetcode",
-  "publisher": "ShiZiMiao",
-  "displayName": "LeetCode Hot100 Pro",
-  "description": "在 VS Code 中一站式刷 LeetCode Hot 100：题目浏览、官方/社区题解、多语言编码、在线测试提交与本地调试。",
-  "version": "0.1.9",
-  "icon": "resources/hot100-pro.png",
-  "engines": {
-    "vscode": "^1.107.0"
-  },
-  "categories": [
-    "Education",
-    "Programming Languages"
-  ],
-  "keywords": [
-    "leetcode",
-    "hot-100",
-    "algorithm",
-    "interview",
-    "刷题"
-  ],
-  "galleryBanner": {
-    "color": "#1A1A2E",
-    "theme": "dark"
-  },
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode.git"
-  },
-  "homepage": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode",
-  "bugs": {
-    "url": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode/issues"
-  },
-  "activationEvents": [],
-  "main": "./out/extension.js",
-  "contributes": {
-    "commands": [
-      {
-        "command": "leetcode.login",
-        "title": "LeetCode: 登录",
-        "icon": "$(account)"
-      },
-      {
-        "command": "leetcode.logout",
-        "title": "LeetCode: 退出登录"
-      },
-      {
-        "command": "leetcode.refreshList",
-        "title": "刷新列表",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "leetcode.submit",
-        "title": "LeetCode: 提交代码",
-        "icon": "$(cloud-upload)"
-      },
-      {
-        "command": "leetcode.test",
-        "title": "LeetCode: 运行测试",
-        "icon": "$(play)"
-      },
-      {
-        "command": "leetcode.debug",
-        "title": "LeetCode: 本地调试",
-        "icon": "$(debug-alt)"
-      },
-      {
-        "command": "leetcode.runDebug",
-        "title": "LeetCode: 运行当前文件",
-        "icon": "$(run)"
-      },
-      {
-        "command": "leetcode.viewSolution",
-        "title": "LeetCode: 查看题解",
-        "icon": "$(book)"
-      },
-      {
-        "command": "leetcode.showRawJudge",
-        "title": "LeetCode: 查看最近一次原始判题响应"
-      }
-    ],
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "leetcode-runner",
-          "title": "LeetCode Hot 100",
-          "icon": "$(code)"
-        }
-      ]
-    },
-    "views": {
-      "leetcode-runner": [
-        {
-          "id": "leetcode-hot100",
-          "name": "Hot 100",
-          "contextualTitle": "Hot 100 Questions",
-          "icon": "resources/leetcode.svg"
-        }
-      ]
-    },
-    "menus": {
-      "view/title": [
-        {
-          "command": "leetcode.login",
-          "group": "navigation@1",
-          "when": "view == leetcode-hot100"
-        },
-        {
-          "command": "leetcode.refreshList",
-          "group": "navigation@2",
-          "when": "view == leetcode-hot100"
-        }
-      ],
-      "editor/title": [
-        {
-          "command": "leetcode.runDebug",
-          "group": "navigation@0",
-          "when": "resourcePath =~ /leetcode/"
-        },
-        {
-          "command": "leetcode.debug",
-          "group": "navigation@1",
-          "when": "resourcePath =~ /leetcode/"
-        },
-        {
-          "command": "leetcode.test",
-          "group": "navigation@2",
-          "when": "resourcePath =~ /leetcode/"
-        },
-        {
-          "command": "leetcode.submit",
-          "group": "navigation@3",
-          "when": "resourcePath =~ /leetcode/"
-        }
-      ]
-    }
-  },
-  "scripts": {
-    "vscode:prepublish": "pnpm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "pretest": "pnpm run compile && pnpm run lint",
-    "lint": "eslint src",
-    "test": "vscode-test",
-    "test:unit": "node --test \"out/unit/*.unit.test.js\""
-  },
-  "devDependencies": {
-    "@types/mocha": "^10.0.10",
-    "@types/node": "22.x",
-    "@types/vscode": "^1.107.0",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2",
-    "eslint": "^9.39.1",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.48.1"
-  },
-  "dependencies": {
-    "playwright-core": "^1.63.0"
-  }
+	"name": "leetcode",
+	"publisher": "ShiZiMiao",
+	"displayName": "LeetCode Hot100 Pro",
+	"description": "在 VS Code 中一站式刷 LeetCode Hot 100：题目浏览、官方/社区题解、多语言编码、在线测试提交与本地调试。",
+	"version": "0.1.10",
+	"icon": "resources/hot100-pro.png",
+	"engines": {
+		"vscode": "^1.107.0"
+	},
+	"categories": [
+		"Education",
+		"Programming Languages"
+	],
+	"keywords": [
+		"leetcode",
+		"hot-100",
+		"algorithm",
+		"interview",
+		"刷题"
+	],
+	"galleryBanner": {
+		"color": "#1A1A2E",
+		"theme": "dark"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode.git"
+	},
+	"homepage": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode",
+	"bugs": {
+		"url": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode/issues"
+	},
+	"activationEvents": [],
+	"main": "./out/extension.js",
+	"contributes": {
+		"commands": [
+			{
+				"command": "leetcode.login",
+				"title": "LeetCode: 登录",
+				"icon": "$(account)"
+			},
+			{
+				"command": "leetcode.logout",
+				"title": "LeetCode: 退出登录"
+			},
+			{
+				"command": "leetcode.refreshList",
+				"title": "刷新列表",
+				"icon": "$(refresh)"
+			},
+			{
+				"command": "leetcode.submit",
+				"title": "LeetCode: 提交代码",
+				"icon": "$(cloud-upload)"
+			},
+			{
+				"command": "leetcode.test",
+				"title": "LeetCode: 运行测试",
+				"icon": "$(play)"
+			},
+			{
+				"command": "leetcode.debug",
+				"title": "LeetCode: 本地调试",
+				"icon": "$(debug-alt)"
+			},
+			{
+				"command": "leetcode.runDebug",
+				"title": "LeetCode: 运行当前文件",
+				"icon": "$(run)"
+			},
+			{
+				"command": "leetcode.viewSolution",
+				"title": "LeetCode: 查看题解",
+				"icon": "$(book)"
+			},
+			{
+				"command": "leetcode.showRawJudge",
+				"title": "LeetCode: 查看最近一次原始判题响应"
+			},
+			{
+				"command": "leetcode.debugFailedCase",
+				"title": "LeetCode: 用判题失败用例本地调试"
+			},
+			{
+				"command": "leetcode.customTest",
+				"title": "LeetCode: 用自定义用例测试",
+				"icon": "$(beaker)"
+			},
+			{
+				"command": "leetcode.setStatusFilter",
+				"title": "侧栏状态筛选：未做/已解决/尝试过"
+			},
+			{
+				"command": "leetcode.clearWrongQueue",
+				"title": "清空错题回顾队列"
+			}
+		],
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "leetcode-runner",
+					"title": "LeetCode Hot 100",
+					"icon": "$(code)"
+				}
+			]
+		},
+		"views": {
+			"leetcode-runner": [
+				{
+					"id": "leetcode-hot100",
+					"name": "Hot 100",
+					"contextualTitle": "Hot 100 Questions",
+					"icon": "resources/leetcode.svg"
+				}
+			]
+		},
+		"menus": {
+			"view/title": [
+				{
+					"command": "leetcode.login",
+					"group": "navigation@1",
+					"when": "view == leetcode-hot100"
+				},
+				{
+					"command": "leetcode.refreshList",
+					"group": "navigation@2",
+					"when": "view == leetcode-hot100"
+				}
+			],
+			"editor/title": [
+				{
+					"command": "leetcode.runDebug",
+					"group": "navigation@0",
+					"when": "resourcePath =~ /leetcode/"
+				},
+				{
+					"command": "leetcode.debug",
+					"group": "navigation@1",
+					"when": "resourcePath =~ /leetcode/"
+				},
+				{
+					"command": "leetcode.test",
+					"group": "navigation@2",
+					"when": "resourcePath =~ /leetcode/"
+				},
+				{
+					"command": "leetcode.submit",
+					"group": "navigation@3",
+					"when": "resourcePath =~ /leetcode/"
+				},
+				{
+					"command": "leetcode.customTest",
+					"group": "navigation@4",
+					"when": "resourcePath =~ /customcase_/"
+				}
+			]
+		}
+	},
+	"scripts": {
+		"vscode:prepublish": "pnpm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"pretest": "pnpm run compile && pnpm run lint",
+		"lint": "eslint src",
+		"test": "vscode-test",
+		"test:unit": "node --test \"out/unit/*.unit.test.js\"",
+		"release": "node scripts/release.mjs"
+	},
+	"devDependencies": {
+		"@types/mocha": "^10.0.10",
+		"@types/node": "22.x",
+		"@types/vscode": "^1.107.0",
+		"@vscode/test-cli": "^0.0.12",
+		"@vscode/test-electron": "^2.5.2",
+		"eslint": "^9.39.1",
+		"typescript": "^5.9.3",
+		"typescript-eslint": "^8.48.1"
+	},
+	"dependencies": {
+		"playwright-core": "^1.63.0"
+	}
 }

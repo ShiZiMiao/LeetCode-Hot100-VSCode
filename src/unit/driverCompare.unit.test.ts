@@ -76,3 +76,14 @@ test('generateDebugFile：Python 驱动内嵌期望输出 base64 可解码且不
 	// 每项 [是否可 JSON 解析, 值]：'[1]' 可解析；后者是题面非标准文本 → 标 0（驱动侧显示"未校验"）
 	assert.deepEqual(decoded, [[1, [1]], [0, 'bad " quote \\"']]);
 });
+
+test('generateDebugFile：判题失败用例单例输入与期望正确内嵌', () => {
+	const snippet = 'class Solution:\n    def sortColors(self, nums):\n        pass\n';
+	const gen = generateDebugFile('python3', '75', 'sort-colors', '[2,1]', snippet, '/tmp/75_sort-colors.py', ['[2,1]']);
+	assert.ok(gen);
+	assert.match(gen!.content, /test_cases = """\[2,1\]"""/, '失败用例输入应写入 test_cases');
+	const m = gen!.content.match(/b64decode\("([^"]+)"\)/);
+	assert.ok(m, '驱动应含 base64 期望输出');
+	const decoded = JSON.parse(Buffer.from(m![1], 'base64').toString('utf8'));
+	assert.deepEqual(decoded, [[1, [2, 1]]]);
+});

@@ -15,10 +15,10 @@
 
 ## 0.2.0 · 好用（复盘体系 + 借机重构，约 1 周）
 
-- [ ] 进度与复盘：侧栏总进度（n/100）、分组完成数、状态筛选（未做/已解决/尝试过）
-- [ ] 错题回顾队列：记录失败提交时间，本地存储，"待复习"置顶
-- [ ] extension.ts 模块化拆分（题面面板生成 / 判题上报 / webview 消息协议类型化），与复盘功能同 PR
-- [ ] `pnpm release <version>` 发布脚本：版本号/CHANGELOG 校验/commit/tag/GitHub Release/Open VSX 发布，Marketplace 手动步骤输出操作指引
+- [x] 进度与复盘：侧栏首行总进度（n/100 + 百分比 + 状态筛选提示）；分组标题显示「已解 x / 总数」；侧栏状态筛选（未做/已解决/尝试过）——点击总进度行或命令 `leetcode.setStatusFilter`（2026-09-16：纯逻辑 `utils/progressStats.ts` + 单测；判题结果实时更新侧栏与分组进度，提交通过=已解决、测试/未通过=尝试过，已解决不被测试降级）
+- [x] 错题回顾队列：提交失败自动记录（时间/原因/题目），侧栏「❌ 错题回顾」入口按失败时间倒序展示，点击重开题目，提交通过自动移出，`leetcode.clearWrongQueue` 一键清空；本地存储走 globalState（2026-09-16：纯逻辑 `utils/wrongQueue.ts` + 单测）
+- [x] extension.ts 模块化拆分（2026-09-16：题面/题解 HTML 生成与 Markdown 渲染器 → `src/views/problemPanel.ts`；判题上报/忙碌锁/轮询 → `src/judgeFeedback.ts`；共用 HTML 工具 → `src/utils/htmlUtil.ts`；收藏消息协议类型化 → `src/shared/webviewMessages.ts`；extension.ts 从 3654 行降至约 1900 行；tsconfig 排除 scripts）
+- [x] `pnpm release <version>` 发布脚本（2026-09-16：`scripts/release.mjs`——版本/CHANGELOG 条目/工作区干净校验 → 改版本号 → vsce 打包（固定三参数）→ commit/tag/push → gh release 挂 VSIX → Open VSX（检测 OVSX_PAT）→ 输出 Marketplace 手动上传指引；支持 `--dry-run`）
 
 ## 0.3.0+ · 增长
 

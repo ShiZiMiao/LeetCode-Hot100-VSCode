@@ -27,6 +27,38 @@ export function formatJudgeValue(value: any): string {
 }
 
 /**
+ * 判题数组（code_answer/expected_code_answer）与 total_testcases 对齐：
+ * 判题数组常在末尾多一个空串，长度为 用例数+1 时去掉再对齐。
+ */
+function alignCaseArrays(outputs: any[], expects: any[], n: number): { outArr: any[]; expArr: any[] } | undefined {
+    const align = (arr: any[]) => arr.length === n
+        ? arr
+        : (arr.length === n + 1 && String(arr[arr.length - 1]).trim() === '' ? arr.slice(0, n) : undefined);
+    const outArr = align(outputs);
+    const expArr = align(expects);
+    return outArr && expArr ? { outArr, expArr } : undefined;
+}
+
+/**
+ * 逐用例输入按行数均分（多参数题每个参数占一行，每用例 = 参数个数行）；
+ * 不能整除时返回 undefined（无法还原逐用例输入）。
+ */
+function splitCaseInputs(inputText: string, n: number): string[][] | undefined {
+    if (!inputText) {
+        return undefined;
+    }
+    const lines = inputText.replace(/\r\n?/g, '\n').split('\n');
+    while (lines.length > 0 && lines[lines.length - 1].trim() === '') { lines.pop(); }
+    if (lines.length === 0 || lines.length % n !== 0) {
+        return undefined;
+    }
+    const per = lines.length / n;
+    const inputLines: string[][] = [];
+    for (let i = 0; i < n; i++) { inputLines.push(lines.slice(i * per, (i + 1) * per)); }
+    return inputLines;
+}
+
+/**
  * 尝试按用例分组输出判题结果。runCode 判题的 code_answer / expected_code_answer
  * 是与用例一一对齐的数组，compare_result 为逐用例 0/1 串，total_testcases 为用例数；
  * 输入原始串的行数若能被用例数整除即按此分组（多参数题每个参数占一行，每用例 = 参数个数行）。
@@ -39,26 +71,12 @@ export function buildCaseSections(check: any, inputText: string): string[] | und
     if (!Array.isArray(outputs) || !Array.isArray(expects) || outputs.length === 0 || n <= 0) {
         return undefined;
     }
-    // 判题数组常在末尾多一个空串，长度为 用例数+1 时去掉再对齐
-    const align = (arr: any[]) => arr.length === n
-        ? arr
-        : (arr.length === n + 1 && String(arr[arr.length - 1]).trim() === '' ? arr.slice(0, n) : undefined);
-    const outArr = align(outputs);
-    const expArr = align(expects);
-    if (!outArr || !expArr) {
+    const aligned = alignCaseArrays(outputs, expects, n);
+    if (!aligned) {
         return undefined;
     }
-    // 逐用例输入：按行数均分；不能整除则放弃分组展示输入（各用例仍显示输出/预期）
-    let inputLines: string[][] | undefined;
-    if (inputText) {
-        const lines = inputText.replace(/\r\n?/g, '\n').split('\n');
-        while (lines.length > 0 && lines[lines.length - 1].trim() === '') { lines.pop(); }
-        if (lines.length > 0 && lines.length % n === 0) {
-            const per = lines.length / n;
-            inputLines = [];
-            for (let i = 0; i < n; i++) { inputLines.push(lines.slice(i * per, (i + 1) * per)); }
-        }
-    }
+    const { outArr, expArr } = aligned;
+    const inputLines = splitCaseInputs(inputText, n);
     // compare_result 仅由 0/1 组成时才可信；混有其他字符（如未跑用例的 null 串）不显示逐用例状态
     const compare = typeof check.compare_result === 'string' && /^[01]*$/.test(check.compare_result) ? check.compare_result : '';
     const sections: string[] = [];
@@ -75,6 +93,70 @@ export function buildCaseSections(check: any, inputText: string): string[] | und
     return sections;
 }
 
+/**
+ * 单个用例的判题信息（"用失败用例本地调试"/自定义用例入口用）。
+ * input 为该用例的原始输入行（\n 连接）；无法按用例拆分时为空串（判为不可调试）。
+ */
+export interface JudgeCaseInfo {
+    /** 1-based 用例序号 */
+    index: number;
+    /** 该用例原始输入行（\n 连接）；无法还原时为空串 */
+    input: string;
+    /** formatJudgeValue 格式化后的实际输出 */
+    output: string;
+    /** formatJudgeValue 格式化后的预期结果 */
+    expected: string;
+    /** 是否通过（compare_result 可信时按位判定） */
+    passed: boolean;
+    /** 通过/失败判定是否可信（compare_result 非纯 0/1 串时为 false，避免误把通过用例当失败） */
+    known: boolean;
+}
+
+/**
+ * 从判题响应提取逐用例结构化信息：
+ * - runCode 测试：按 code_answer/expected_code_answer 数组 + compare_result + 行数均分还原；
+ * - 提交等无逐用例数组的场景：Accepted 无失败用例返回 []；未通过时回退单条（input/output/expected）。
+ */
+export function collectJudgeCaseInfos(check: any, inputFallback?: string): JudgeCaseInfo[] {
+    const inputText = formatJudgeValue(pickFirst(check.input, check.last_testcase, check.test_case)) || formatJudgeValue(inputFallback);
+    const outputs = check.code_answer ?? check.coded_answer;
+    const expects = Array.isArray(check.expected_code_answer) ? check.expected_code_answer : check.expected_output;
+    const n = Number(check.total_testcases) || 0;
+    if (Array.isArray(outputs) && Array.isArray(expects) && outputs.length > 0 && n > 0) {
+        const aligned = alignCaseArrays(outputs, expects, n);
+        if (!aligned) {
+            return [];
+        }
+        const { outArr, expArr } = aligned;
+        const inputLines = splitCaseInputs(inputText, n);
+        // compare_result 仅由 0/1 组成时才可信
+        const compareValid = typeof check.compare_result === 'string' && /^[01]*$/.test(check.compare_result);
+        const compare = compareValid ? check.compare_result : '';
+        const infos: JudgeCaseInfo[] = [];
+        for (let i = 0; i < n; i++) {
+            infos.push({
+                index: i + 1,
+                input: inputLines ? inputLines[i].join('\n') : '',
+                output: formatJudgeValue(outArr[i]),
+                expected: formatJudgeValue(expArr[i]),
+                passed: compare[i] === '1',
+                known: compareValid
+            });
+        }
+        return infos;
+    }
+    // 无逐用例数组（提交判题等）：Accepted 无失败用例；未通过时把响应字段回退成单条用例
+    if (String(check.status_msg) === 'Accepted') {
+        return [];
+    }
+    const output = formatJudgeValue(pickFirst(check.code_answer, check.coded_answer, check.code_output, check.total_output));
+    const expected = formatJudgeValue(pickFirst(check.expected_output, check.expected_code_answer));
+    if (!inputText && !output && !expected) {
+        return [];
+    }
+    return [{ index: 1, input: inputText, output, expected, passed: false, known: true }];
+}
+
 /** 依序取第一个非空值（?? 不跳过空串——提交判题 code_output 常为 ""，真输出在 total_output） */
 function pickFirst(...vals: any[]): any {
     return vals.find(v => v !== undefined && v !== null && v !== '');
@@ -84,7 +166,7 @@ export function buildJudgeReport(check: any, inputFallback?: string, ok?: boolea
     const status = String(check.status_msg || '');
     const statusLabel = STATUS_ZH[status] ? `${STATUS_ZH[status]} (${status})` : (status || '未知状态');
     const passed = (check.total_correct !== undefined && check.total_testcases !== undefined)
-        ? `，${check.total_correct} / ${check.total_testcases} 个用例通过`
+        ? `，${check.total_correct}/${check.total_testcases} 个用例通过`
         : '';
     const summary = statusLabel + passed;
 
@@ -119,6 +201,6 @@ export function buildJudgeReport(check: any, inputFallback?: string, ok?: boolea
     }
     if (compileError) { lines.push(`\n⚠️【编译错误】\n${compileError}`); }
     if (runtimeError) { lines.push(`\n💥【运行时错误】\n${runtimeError}`); }
-    lines.push(`\n💡（原始判题响应：点击提示中的"原始判题响应"按钮，或运行命令 "LeetCode: 查看最近一次原始判题响应"，在 JSON 编辑器内可折叠查看）`);
+    lines.push(`\n💡（原始判题响应：运行命令 "LeetCode: 查看最近一次原始判题响应"，在 JSON 编辑器内可折叠查看）`);
     return { summary, detail: lines.join('\n') };
 }

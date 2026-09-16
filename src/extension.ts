@@ -13,11 +13,16 @@ import { LeetCodeApi, Question } from './core/leetcodeApi';
 import { loginWithBrowser, pickChromiumChannel, detectDefaultBrowser } from './core/browserLogin';
 import { spawnSync } from 'child_process';
 import { Hot100Provider } from './views/hot100Provider';
-import { selectLanguage, getExtension } from './utils/languageUtils';
+import { StatusFilter } from './utils/progressStats';
+import { selectLanguage, getExtension, SUPPORTED_LANGUAGES } from './utils/languageUtils';
 import { generateDebugFile } from './utils/debugUtils';
-import { buildJudgeReport } from './utils/judgeReport';
+import { buildJudgeReport, collectJudgeCaseInfos, JudgeCaseInfo } from './utils/judgeReport';
 import { extractExpectedOutputs, parseProblemFileName } from './utils/problemText';
 import { buildLeetCodeCookie } from './utils/loginCookie';
+import { escapeHtml, errMsg, formatArticleDate } from './utils/htmlUtil';
+import { generatePanelHtml, renderMarkdownToHtml, sanitizeSolutionContent, localizeContentImages, getPlayerFiles, initHighlightJs } from './views/problemPanel';
+import { reportJudgeResult, showRawJudgeResponse, tryBeginJudge, pollJudgeResult, releaseJudge, getLastJudgeCases, oneLine, judgeOutputChannel, judgeStatusBar, errorDiagnostics } from './judgeFeedback';
+import { PanelToExtensionMessage, ExtensionToPanelMessage } from './shared/webviewMessages';
 
 /**
  * 清理题解 Markdown 内容中的 <iframe> 代码游玩区。
@@ -28,114 +33,38 @@ import { buildLeetCodeCookie } from './utils/loginCookie';
  * 同时保留题解中的文字、公式与代码块。题目自身的代码骨架由
  * codeSnippets 以代码块形式单独展示。
  */
-function sanitizeSolutionContent(content: string): string {
-	if (!content) {
-		return content;
-	}
-	return content.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
-}
 
 /** HTML 转义，防止代码注入 */
-function escapeHtml(text: string): string {
-	return text
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;');
-}
+
+/** LeetCode 题解文章 createdAt 为秒级时间戳，格式化为日期；无效值返回空串 */
 
 /**
  * 提取干净的异常消息用于 toast/页面提示：直接 `${error}` 插值会带上裸 "Error:" 前缀，
  * 统一走这里，保持全部报错文案风格一致。
  */
-function errMsg(error: unknown): string {
-	if (error instanceof Error) { return error.message; }
-	if (typeof error === 'string') { return error; }
-	try { return JSON.stringify(error); } catch { return String(error); }
-}
 
 // 代码运行/提交错误以 VS Code 原生方式呈现：诊断（编辑器波浪线 + 问题面板），而非长文本弹窗
-const errorDiagnostics = vscode.languages.createDiagnosticCollection('leetcode');
 
 /**
  * 把 LeetCode 运行/提交错误写入编辑器诊断，尽量定位到出错行。
  * 返回解析出的行号（1-based），未解析到时返回 null。
  */
-function showCodeError(fileUri: vscode.Uri, fullMessage: string): number | null {
-	// Python 格式: "Line 5 in groupAnagrams (Solution.py)"；Java/JS 格式: "Solution.java:5" 或 "Solution.js:5:9"
-	let lineNumber: number | null = null;
-	const pyMatch = fullMessage.match(/Line\s+(\d+)/i);
-	// C++/Java/JS 等文件名:行号[:列] 格式；行号后可能跟 "error:" 等后缀（如 main.cpp:3:5: error:），
-	// 不再要求匹配到行尾
-	const colonMatch = fullMessage.match(/:(\d+)(?::\d+)?(?=\s|:|\)|$)/m);
-	if (pyMatch) {
-		lineNumber = parseInt(pyMatch[1], 10);
-	} else if (colonMatch) {
-		lineNumber = parseInt(colonMatch[1], 10);
-	}
-
-	const lineIdx = lineNumber && lineNumber >= 1 ? lineNumber - 1 : 0;
-	const diagnostic = new vscode.Diagnostic(
-		new vscode.Range(lineIdx, 0, lineIdx, 0),
-		fullMessage,
-		vscode.DiagnosticSeverity.Error
-	);
-	errorDiagnostics.set(fileUri, [diagnostic]);
-	return lineNumber;
-}
 
 // LeetCode 判题详情通道：每次测试/提交都把完整判题信息（输入、输出、预期结果、
 // 错误信息）写进来；toast 只留一行简讯。Output 为纯文本视图，ANSI 颜色不可用，
 // 通过/失败与各字段用图标（✅/❌/📥/📤/🎯 等）标识。
-const judgeOutputChannel = vscode.window.createOutputChannel('LeetCode 判题结果');
 
 // 判题状态栏项：测试/提交的轮询等待期间显示已等待秒数（通知进度弹窗只有转圈没有时长感）
-const judgeStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
 judgeStatusBar.command = 'leetcode.showRawJudge';
 judgeStatusBar.tooltip = 'LeetCode 判题进行中（点击查看最近一次原始判题响应）';
 
 // 判题在途忙碌锁：测试/提交共用一把。并发 runCode 会互相覆盖"最近一次判题响应"，
 // 重复提交还会产生多条提交记录；命令入口同步占位、判题结束（成功/超时/异常）释放。
-let judgeInFlight = false;
-function tryBeginJudge(): boolean {
-	if (judgeInFlight) {
-		vscode.window.showWarningMessage('已有测试/提交在判题中，请等待结果后再操作');
-		return false;
-	}
-	judgeInFlight = true;
-	return true;
-}
 
 /**
  * 判题结果轮询：1s 起步 ×1.5 指数退避封顶 5s，总预算 ~90s（旧实现固定 2s×15=30s，
  * 慢题判题会假性超时）；期间状态栏显示已等待秒数。超时返回 undefined 由调用方提示。
  */
-async function pollJudgeResult(api: LeetCodeApi, judgeId: string): Promise<any | undefined> {
-	const budgetMs = 90000;
-	let waited = 0;
-	let delay = 1000;
-	judgeStatusBar.text = '$(sync~spin) LeetCode 判题中…';
-	judgeStatusBar.show();
-	try {
-		while (waited < budgetMs) {
-			await new Promise(resolve => setTimeout(resolve, delay));
-			waited += delay;
-			judgeStatusBar.text = `$(sync~spin) LeetCode 判题中… ${Math.round(waited / 1000)}s`;
-			const check = await api.checkSubmission(judgeId);
-			if (check.state === 'SUCCESS') {
-				return check;
-			}
-			// 会话过期（status_code 1002）判题永远等不来，提前终止并报错（同时 onSessionExpired 会 toast）
-			if (check?.status_code === 1002) {
-				throw new Error('LeetCode 会话已过期，请重新登录后再试');
-			}
-			delay = Math.min(Math.round(delay * 1.5), 5000);
-		}
-		return undefined;
-	} finally {
-		judgeStatusBar.hide();
-	}
-}
 
 // 会话过期主动提示：服务端判定未登录（HTTP 401 / status_code 1002）时限频 toast，
 // 避免过期会话把每个请求都弹一遍
@@ -162,7 +91,10 @@ const pendingProblemOpens = new Set<string>();
 const pendingSolutionOpens = new Set<string>();
 
 // 最近一次判题的原始响应对象（JSON 编辑器按需展示用，支持折叠）
-let lastRawJudgeResponse: any;
+
+// 最近一次判题的逐用例信息（"用判题失败用例本地调试"入口用；携带 titleSlug 用于与当前文件比对防串题）
+
+/** 把可能含换行的文本压成一行用于 QuickPick 展示（输入/期望超长截断） */
 
 /**
  * 取题解代码编辑器：焦点在真实文件编辑器（scheme === file）时直接使用；
@@ -174,7 +106,14 @@ let lastRawJudgeResponse: any;
 async function getProblemCodeEditor(context: vscode.ExtensionContext): Promise<vscode.TextEditor | undefined> {
 	const active = vscode.window.activeTextEditor;
 	if (active && active.document.uri.scheme === 'file') {
-		return active;
+		// 只接受受支持语言扩展名的文件：自定义用例文件（debug/customcase_*.txt）、
+		// 备忘等旁路文件不作为代码/调试来源，回退到 currentProblem.filePath
+		const extMatch = active.document.uri.fsPath.match(/\.([a-z0-9]+)$/i);
+		const ext = extMatch ? extMatch[1].toLowerCase() : '';
+		const codeExts = new Set(SUPPORTED_LANGUAGES.map(l => l.extension));
+		if (codeExts.has(ext)) {
+			return active;
+		}
 	}
 	const currentProblem = context.workspaceState.get<any>('currentProblem');
 	const filePath: string | undefined = currentProblem?.filePath;
@@ -193,17 +132,6 @@ async function getProblemCodeEditor(context: vscode.ExtensionContext): Promise<v
  * 以 JSON 编辑器打开最近一次原始判题响应：JSON 语言模式自带折叠，
  * 与 Output 纯文本不同，长对象可以逐级收起。
  */
-async function showRawJudgeResponse(): Promise<void> {
-	if (lastRawJudgeResponse === undefined) {
-		vscode.window.showInformationMessage('暂无判题记录，运行测试或提交代码后可查看');
-		return;
-	}
-	const doc = await vscode.workspace.openTextDocument({
-		language: 'json',
-		content: JSON.stringify(lastRawJudgeResponse, null, 2)
-	});
-	await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preview: false });
-}
 
 /**
  * 判题结果的统一上报（通过与否都写）：完整详情写入输出通道（输入/输出/预期/
@@ -211,52 +139,177 @@ async function showRawJudgeResponse(): Promise<void> {
  * 附"查看判题详情"，提交场景再附"在浏览器打开"直达官方判题页。
  * 编译/运行时错误文本同时写编辑器诊断（波浪线 + 问题面板）。
  */
-function reportJudgeResult(
-	kind: '测试' | '提交',
-	check: any,
-	opts: { ok: boolean; fileUri: vscode.Uri; inputFallback?: string; submissionUrl?: string }
-): void {
-	const report = buildJudgeReport(check, opts.inputFallback, opts.ok);
-	lastRawJudgeResponse = check;
-	judgeOutputChannel.clear();
-	// 行首图标标识操作类型（🧪测试 / 🚀提交），对错图标（✅/❌）在【判题结果】行
-	judgeOutputChannel.appendLine(`${kind === '测试' ? '🧪' : '🚀'}【${kind}】 ${new Date().toLocaleString()}`);
-	judgeOutputChannel.appendLine(report.detail);
-	// 判题完成默认展开输出面板（preserveFocus：面板获得可见但不抢编辑器焦点，
-	// toast 按钮与键位仍可用）
-	judgeOutputChannel.show(true);
 
-	const errorText = String(check.full_compile_error || check.full_runtime_error || '').trim();
-	if (!opts.ok && errorText) {
-		showCodeError(opts.fileUri, `${check.status_msg || '错误'}\n${errorText}`);
+/**
+ * 用指定用例生成调试文件并启动调试（"本地调试"与"判题失败用例本地调试"共用）。
+ * testCases / expectedOutputs 传入要写入驱动的用例输入与期望输出（失败用例调试时
+ * 只比对该用例，不再拉题面提取示例期望）；customCaseSource 为 true 时非 Python
+ * 模板提示文案注明用例需按模板适配（Java/C++/Go/Rust 模板本就不自动套用例）。
+ */
+async function runDebugWithCases(
+	editor: vscode.TextEditor,
+	problem: any,
+	testCases: string,
+	expectedOutputs: string[],
+	customCaseSource: boolean
+): Promise<void> {
+	const filePath = editor.document.uri.fsPath;
+	const dirPath = filePath.substring(0, filePath.lastIndexOf('\\') !== -1 ? filePath.lastIndexOf('\\') : filePath.lastIndexOf('/'));
+
+	// 驱动（尤其 Python 的 importlib 方式）从磁盘读题解代码，先保存避免调试到旧代码
+	await editor.document.save();
+	const userCode = editor.document.getText();
+
+	// 生成调试文件（Python 为 importlib 驱动，其他语言为自包含模板；统一放入 debug/ 目录）
+	const debugFile = generateDebugFile(
+		problem.lang,
+		problem.questionId || '0',
+		problem.titleSlug,
+		testCases,
+		userCode,
+		filePath,
+		expectedOutputs
+	);
+
+	if (!debugFile) {
+		vscode.window.showWarningMessage(`暂不支持 ${problem.lang} 的本地调试，目前支持 Python3 / Java / C++ / JavaScript / TypeScript / Go / Rust`);
+		return;
 	}
 
-	const buttons: string[] = ['查看判题详情', '原始判题响应'];
-	if (opts.submissionUrl) { buttons.push('在浏览器打开'); }
-	const show = (message: string) => {
-		const p = opts.ok
-			? vscode.window.showInformationMessage(message, ...buttons)
-			: vscode.window.showErrorMessage(message, ...buttons);
-		p.then(selection => {
-			if (selection === '查看判题详情') {
-				judgeOutputChannel.show(true);
-			} else if (selection === '原始判题响应') {
-				void showRawJudgeResponse();
-			} else if (selection === '在浏览器打开' && opts.submissionUrl) {
-				vscode.env.openExternal(vscode.Uri.parse(opts.submissionUrl));
+	// 写入调试文件（debug/ 子目录，避免散落在题解文件旁）
+	const debugDir = path.join(dirPath, 'debug');
+	const debugFilePath = path.join(debugDir, debugFile.fileName);
+	const debugFileUri = vscode.Uri.file(debugFilePath);
+
+	try {
+		await vscode.workspace.fs.createDirectory(vscode.Uri.file(debugDir));
+		await vscode.workspace.fs.writeFile(debugFileUri, Buffer.from(debugFile.content, 'utf8'));
+
+		// Python：直接启动 VS Code 原生调试会话（等价于"Python Debugger: Debug Python File"）。
+		// 驱动通过 importlib 加载题解代码文件，断点可以直接打在题解文件上，无需打开驱动文件
+		if (debugFile.fileName.endsWith('.py')) {
+			const pythonDebugger =
+				vscode.extensions.getExtension('ms-python.debugpy') ||
+				vscode.extensions.getExtension('ms-python.python');
+			if (!pythonDebugger) {
+				const choice = await vscode.window.showWarningMessage(
+					'未检测到 Python 调试扩展，需要先安装 "Python Debugger"（ms-python.debugpy）才能使用 Python 本地调试',
+					'安装扩展'
+				);
+				if (choice === '安装扩展') {
+					// workbench.extensions.installExtension 自 VS Code 1.75 起可用，静默安装
+					await vscode.commands.executeCommand('workbench.extensions.installExtension', 'ms-python.debugpy');
+					vscode.window.showInformationMessage('Python Debugger 已安装，请再次点击"本地调试"');
+				}
+				return;
 			}
-		});
-	};
-	if (opts.ok) {
-		const perf = [
-			check.status_runtime && check.status_runtime !== 'N/A' ? `运行时间 ${check.status_runtime}` : '',
-			check.status_memory && check.status_memory !== 'N/A' ? `内存 ${check.status_memory}` : ''
-		].filter(Boolean).join('，');
-		show(`✅ ${kind}通过！${perf ? ` ${perf}` : ''}（详情见输出 · LeetCode 判题结果）`);
-	} else {
-		const suffix = errorText ? '（编译/运行时错误已标注在编辑器）' : '';
-		show(`❌ ${kind}未通过：${report.summary}${suffix}`);
+			const started = await vscode.debug.startDebugging(vscode.workspace.workspaceFolders?.[0], {
+				type: 'python',
+				name: 'LeetCode Hot 100 本地调试',
+				request: 'launch',
+				program: debugFilePath,
+				cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? dirPath,
+				console: 'internalConsole',
+				// pydevd 文件过滤器（主通道；debugpy 后端在 debuggee 进程启动时读取）：
+				// 命中的文件帧完全不 trace——断点不触发、单步直接穿过、调用栈隐藏。
+				// 把驱动自身排除后，调试的停止点只出现在题解代码文件里（F10 步出函数
+				// 不会停进 debug.py，而是直接跑到下一个断点/结束），与"断点打在题解文件"
+				// 的 importlib 机制配套。绝对路径匹配为逐段 normcase + 盘符大小写不敏感。
+				// 兜底通道：生成的驱动启动时自行向 pydevd 注册同一路径的排除规则
+				// （debugUtils 的 _lc_exclude_debug_self），env 未传到时会在那里补上并
+				// 在调试控制台打状态行。修改这两处后务必重载扩展主机，旧代码不会带过滤。
+				env: {
+					PYDEVD_FILTERS: JSON.stringify({ [debugFilePath]: true })
+				}
+			});
+			if (!started) {
+				vscode.window.showErrorMessage('调试会话启动失败，请检查 Python 解释器是否已配置（Python 扩展插件）');
+			}
+			return;
+		}
+
+		// 打开调试文件（非 Python 语言的模板需要用户补充测试代码）
+		const doc = await vscode.workspace.openTextDocument(debugFileUri);
+		await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+
+		const manualHint = customCaseSource && ['java', 'cpp', 'c++', 'golang', 'go', 'rust'].includes(problem.lang)
+			? '（已带入该用例，但该语言模板需按注释在 main 中手动适配）'
+			: '';
+		vscode.window.showInformationMessage(
+			`调试文件已创建：debug/${debugFile.fileName}${manualHint}\n修改测试参数后按 F5/运行 执行`
+		);
+	} catch (error) {
+		vscode.window.showErrorMessage(`创建调试文件失败: ${errMsg(error)}`);
 	}
+}
+
+// 自定义用例文件登记：路径 → { problem, solutionPath }（判题所需题目身份 + 题解文件路径），
+// 供"保存即自动判题"与"再运行命令立即重跑"使用
+const customCaseFiles = new Map<string, { problem: any; solutionPath: string }>();
+
+/**
+ * 以当前登记的用例文件内容在线判题（runCode 自定义 data_input）。
+ * 题解代码从登记的题解文件读取：已打开且脏则先保存，再取内存内容。
+ */
+async function runCustomCaseWith(api: LeetCodeApi, problem: any, solutionPath: string, inputText: string): Promise<void> {
+	const dataInput = inputText.replace(/\r\n?/g, '\n').trim();
+	if (!dataInput) {
+		vscode.window.showWarningMessage('自定义用例为空，请填写用例输入（每行一个参数值）后保存');
+		return;
+	}
+
+	// 在途忙碌锁：判题发起前同步占位，防快速连点并发 runCode/覆盖判题详情
+	if (!tryBeginJudge()) {
+		return;
+	}
+	vscode.window.withProgress({
+		location: vscode.ProgressLocation.Notification,
+		title: '正在运行自定义用例...',
+		cancellable: false
+	}, async () => {
+		try {
+			// 读题解代码：已打开则保存后用内存内容，否则读磁盘
+			let code: string;
+			const openDoc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === solutionPath);
+			if (openDoc) {
+				await openDoc.save();
+				code = openDoc.getText();
+			} else {
+				code = (await vscode.workspace.openTextDocument(vscode.Uri.file(solutionPath))).getText();
+			}
+
+			const result = await api.runCode(
+				problem.titleSlug,
+				problem.questionId,
+				problem.lang,
+				code,
+				dataInput
+			);
+
+			const interpretId = result.interpret_id;
+			if (!interpretId) {
+				vscode.window.showErrorMessage('自定义用例测试失败: ' + JSON.stringify(result));
+				return;
+			}
+
+			// 轮询获取结果（退避至 ~90s，状态栏显示等待时长）
+			const check = await pollJudgeResult(api, interpretId);
+			if (check) {
+				reportJudgeResult('自定义用例', check, {
+					ok: check.run_success && !!check.correct_answer,
+					fileUri: vscode.Uri.file(solutionPath),
+					inputFallback: dataInput,
+					titleSlug: problem.titleSlug
+				});
+			} else {
+				vscode.window.showWarningMessage('自定义用例测试超时：判题未在 90 秒内返回，可稍后重试');
+			}
+		} catch (error) {
+			vscode.window.showErrorMessage(`自定义用例测试出错: ${errMsg(error)}`);
+		} finally {
+			releaseJudge();
+		}
+	});
 }
 
 /**
@@ -309,195 +362,32 @@ async function resolveProblemFromFile(
  * 把 HTML 中的 http(s) 图片下载到本地缓存，并替换为 webview 可访问的 asWebviewUri，
  * 避免 webview 加载外部图片失败（如 assets.leetcode.com 等域名）。
  */
-async function localizeContentImages(html: string, panel: vscode.WebviewPanel, context: vscode.ExtensionContext, api: LeetCodeApi): Promise<string> {
-	const srcs = [...new Set([...html.matchAll(/src="(https?:\/\/[^"]+)"/gi)].map(m => m[1]))];
-	if (srcs.length === 0) {
-		return html;
-	}
-	const dirUri = vscode.Uri.joinPath(context.globalStorageUri, 'img');
-	await vscode.workspace.fs.createDirectory(dirUri);
-	let out = html;
-	for (const src of srcs) {
-		try {
-			const extMatch = src.match(/\.(png|jpe?g|gif|webp|svg)(\?|$)/i);
-			const ext = extMatch ? '.' + extMatch[1].toLowerCase() : '.png';
-			const hash = createHash('sha1').update(src).digest('hex').slice(0, 16);
-			const fileUri = vscode.Uri.joinPath(dirUri, hash + ext);
-			let stat: vscode.FileStat | null = null;
-			try {
-				stat = await vscode.workspace.fs.stat(fileUri);
-			} catch (e) {
-				stat = null;
-			}
-			if (!stat || stat.size === 0) {
-				const buf = await api.downloadBinaryRaw(src);
-				if (!buf || buf.length === 0) {
-					continue;
-				}
-				await vscode.workspace.fs.writeFile(fileUri, new Uint8Array(buf));
-			}
-			const localUri = panel.webview.asWebviewUri(fileUri).toString();
-			out = out.split(src).join(localUri);
-		} catch (e) {
-			// 单张图失败保留原地址，不阻断其余内容
-		}
-	}
-	return out;
-}
 
 /**
  * 把题解内容中少量内联 HTML 还原为 Markdown 文本，避免静态渲染时残留原始标签。
  * 只处理安全的常用标签；iframe 等占位区域由调用方在渲染前移除。
  */
-function htmlToMarkdown(content: string): string {
-	let s = content;
-	s = s.replace(/<br\s*\/?>/gi, '\n');
-	s = s.replace(/<\/p>\s*/gi, '\n\n');
-	s = s.replace(/<p[^>]*>/gi, '');
-	s = s.replace(/<img[^>]*alt="([^"]*)"[^>]*src="([^"]*)"[^>]*>/gi, '![$1]($2)');
-	s = s.replace(/<img[^>]*src="([^"]*)"[^>]*>/gi, '![]($1)');
-	s = s.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
-	s = s.replace(/<\/h([1-6])>/gi, '\n\n');
-	s = s.replace(/<h([1-6])[^>]*>/gi, (m, n) => '\n\n' + '#'.repeat(Number(n)) + ' ');
-	s = s.replace(/<(\/?)strong[^>]*>/gi, '**');
-	s = s.replace(/<(\/?)b[^>]*>/gi, '**');
-	s = s.replace(/<(\/?)em[^>]*>/gi, '*');
-	s = s.replace(/<(\/?)i[^>]*>/gi, '*');
-	s = s.replace(/<(\/?)code[^>]*>/gi, '`');
-	s = s.replace(/<(\/?)del[^>]*>/gi, '~~');
-	s = s.replace(/<li[^>]*>/gi, '\n- ');
-	s = s.replace(/<\/li>/gi, '');
-	s = s.replace(/<\/?(ul|ol)[^>]*>/gi, '\n\n');
-	s = s.replace(/<\/?blockquote[^>]*>/gi, '\n> ');
-	s = s.replace(/<\/?(span|div)[^>]*>/gi, '');
-	s = s.replace(/<\/?[a-zA-Z][^>]*>/g, ''); // 兜底：移除其余未知标签
-	s = s.replace(/<!(\[)/g, '$1'); // 部分文章正文带 <![img](...) 包裹，还原为 ![img](...)
-	return s;
-}
 
-interface MarkdownCodeBlock {
-	lang: string;
-	code: string;
-}
 
 /** 代码语言优先级：Python3/Python > C/C++ > 其他（官方题解每组只展示一种语言时使用） */
-function codeLangPriority(lang: string): number {
-	const l = lang.toLowerCase().replace(/\s+/g, '');
-	if (l === 'python3' || l === 'python') {
-		return 0;
-	}
-	if (l === 'c' || l === 'c++' || l === 'cpp') {
-		return 1;
-	}
-	return 2;
-}
 
 /** 语言名显示规范化：py → Python、cpp → C++、golang → Go 等（标签页与代码块标注用） */
-function displayLangName(lang: string): string {
-	const map: Record<string, string> = {
-		'py': 'Python', 'python': 'Python', 'python3': 'Python3',
-		'java': 'Java', 'cpp': 'C++', 'c++': 'C++', 'c': 'C',
-		'go': 'Go', 'golang': 'Go', 'js': 'JavaScript', 'javascript': 'JavaScript',
-		'rust': 'Rust', 'ts': 'TypeScript', 'typescript': 'TypeScript'
-	};
-	return map[lang.toLowerCase()] || lang;
-}
 
 /**
  * 行内 Markdown 渲染（图片/视频/链接/行内代码/粗体/斜体/删除线），文本先做 HTML 转义。
  * videoPageUrl 存在时，视频题解（![xxx.mp4](资产id)）渲染为可点击播放入口——
  * 视频在 LeetCode 内部 CDN 上且带防盗链，webview 无法直接内嵌播放。
  */
-function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
-	let s = escapeHtml(text);
-	s = s.replace(/!\[([^\]]*\.(?:mp4|webm))\]\(([^)\s]+)\)/gi, (m, alt, url) => {
-		if (videoPageUrl) {
-			// 视频题解：uuid 为阿里云 VOD 视频标识，点击后由扩展端查询 playAuth 播放凭证，
-			// 再用 Aliplayer 内嵌播放；失败时降级为浏览器播放入口
-			const uuid = url.replace(/\.(mp4|webm)$/i, '');
-			return `<button class="video-link" data-play-uuid="${uuid}" data-page-url="${videoPageUrl}" onclick="playArticleVideo(this)">🎬 播放视频题解</button>`;
-		}
-		return `<span class="img-placeholder">[视频：${alt}]</span>`;
-	});
-	s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
-		if (/^https?:\/\//i.test(url)) {
-			return `<img src="${url}" alt="${alt}" />`;
-		}
-		return `<span class="img-placeholder">[图片：${alt || 'media'}]</span>`;
-	});
-	s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, url) => {
-		if (/^https?:\/\//i.test(url)) {
-			return `<a href="${url}">${text}</a>`;
-		}
-		return `${text}（${url}）`;
-	});
-	s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
-	s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-	s = s.replace(/__([^_]+)__/g, '<strong>$1</strong>');
-	s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
-	s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-	return s;
-}
 
-function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
-	const cls = block.lang ? `language-${escapeHtml(block.lang)}` : '';
-	// 高亮在扩展端完成：HTML 直接带 hljs 高亮标签，代码显示不依赖网络与 webview 脚本
-	let inner = escapeHtml(block.code);
-	const lang = highlightLangName(block.lang);
-	if (hljsRuntime && lang && hljsRuntime.getLanguage(lang)) {
-		try {
-			inner = hljsRuntime.highlight(block.code, { language: lang }).value;
-		} catch (e) {
-			// 单个代码块高亮失败时回退为纯文本，不影响显示
-		}
-	}
-	// 主题配色由 CSS @media (prefers-color-scheme) 自动跟随 VS Code 主题，渲染侧不固化任何主题类
-	return `<pre class="lc-pre"><button class="lc-copy" title="复制代码" onclick="copyCode(this)">⧉</button><code class="${cls}">${inner}</code></pre>`;
-}
 
 /** 官方题解标签页语言优先级：Python → C/C++ → Java → 其他（同优先级保持原文顺序） */
-function codeTabOrder(lang: string): number {
-	const l = lang.toLowerCase().replace(/\s+/g, '');
-	if (l === 'python3' || l === 'python' || l === 'py') {
-		return 0;
-	}
-	if (l === 'c' || l === 'c++' || l === 'cpp') {
-		return 1;
-	}
-	if (l === 'java') {
-		return 2;
-	}
-	return 3;
-}
 
 /**
  * 多语言代码块 → 语言标签页（保留全部语言，点击切换，类似网页版题解）。
  * preferredFirst 为 true 时按 Python → C/C++ → Java → 其他 的顺序排列（用于官方题解）。
  */
-function renderCodeTabsHtml(blocks: MarkdownCodeBlock[], preferredFirst: boolean = false): string {
-	let ordered = blocks;
-	if (preferredFirst && blocks.length > 1) {
-		// sort 稳定：同一优先级内保持原文顺序
-		ordered = blocks.slice().sort((a, b) => codeTabOrder(a.lang) - codeTabOrder(b.lang));
-	}
-	const tabs = ordered.map((b, idx) => `<button class="lang-tab${idx === 0 ? ' active' : ''}" onclick="selectLangTab(this)">${escapeHtml(displayLangName(b.lang))}</button>`).join('');
-	const contents = ordered.map((b, idx) => `<div class="lang-code-block${idx === 0 ? ' active' : ''}">${renderCodeBlockHtml(b)}</div>`).join('');
-	return `<div class="code-tabs-container"><div class="lang-tabs">${tabs}</div>${contents}</div>`;
-}
 
 /** 相邻代码块组中，按优先级挑一种语言（Python3/Python → C/C++ → 其他首个） */
-function pickPreferredCodeBlock(blocks: MarkdownCodeBlock[]): MarkdownCodeBlock | null {
-	if (blocks.length === 0) {
-		return null;
-	}
-	for (const priority of [0, 1]) {
-		const picked = blocks.find(b => codeLangPriority(b.lang) === priority);
-		if (picked) {
-			return picked;
-		}
-	}
-	return blocks[0];
-}
 
 /**
  * 轻量级 Markdown → HTML 渲染器（扩展端静态渲染，不依赖 webview 的 CDN marked）。
@@ -507,191 +397,18 @@ function pickPreferredCodeBlock(blocks: MarkdownCodeBlock[]): MarkdownCodeBlock 
  *   - 'all'：保留全部代码块并按语言生成标签页（preferredFirst 时优先语言排首位并默认选中，
  *     用于官方题解，接近网页版的多语言切换体验；社区题解保持原文顺序）。
  */
-function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'preferred', preferredFirst: boolean = false, videoPageUrl?: string): string {
-	if (!md) {
-		return '';
-	}
-	// 社区题解正文使用 \r\n 行尾，先归一化，否则围栏/标题等匹配不到
-	const lines = htmlToMarkdown(md.replace(/\r\n?/g, '\n')).split('\n');
-	const out: string[] = [];
-	// 围栏行：```lang [label] 或 ``` 均命中；语言从 ``` 后的内容提取，去掉 [label]
-	const fenceLineRe = /^\s*```\s*(.*)$/;
-	const fenceCloseRe = /^\s*```\s*$/;
-	let i = 0;
-
-	const isTableSeparator = (line: string) => /^\|[\s:|-]+\|$/.test(line.trim());
-	const splitTableRow = (line: string) => line.trim().slice(1, -1).split('|').map(c => c.trim());
-
-	while (i < lines.length) {
-		const line = lines[i];
-		const trimmed = line.trim();
-		const fenceMatch = line.match(fenceLineRe);
-
-		if (fenceMatch) {
-			// 收集相邻代码块（只允许空行分隔），组成一个"解法代码组"
-			const blocks: MarkdownCodeBlock[] = [];
-			let groupDone = false;
-			while (!groupDone && i < lines.length) {
-				const fm = lines[i].match(fenceLineRe);
-				if (!fm) {
-					break;
-				}
-				const lang = fm[1].trim().replace(/\s*\[.*\]$/, '');
-				i++;
-				const code: string[] = [];
-				while (i < lines.length && !fenceCloseRe.test(lines[i])) {
-					code.push(lines[i]);
-					i++;
-				}
-				if (i < lines.length) {
-					i++; // 跳过结束围栏
-				}
-				blocks.push({ lang, code: code.join('\n') });
-				// 后面只隔空行且还有带语言的围栏，则视为相邻块，继续收集
-				let j = i;
-				while (j < lines.length && lines[j].trim() === '') {
-					j++;
-				}
-				if (j < lines.length && /^\s*```\s*\S/.test(lines[j])) {
-					i = j;
-				} else {
-					groupDone = true;
-				}
-			}
-			if (codeMode === 'preferred') {
-				const picked = pickPreferredCodeBlock(blocks);
-				if (picked) {
-					out.push(renderCodeBlockHtml(picked));
-				}
-			} else {
-				out.push(blocks.length > 1 ? renderCodeTabsHtml(blocks, preferredFirst) : renderCodeBlockHtml(blocks[0]));
-			}
-			continue;
-		}
-
-		if (trimmed === '' || trimmed === '[TOC]') {
-			i++;
-		} else if (/^#{1,6}\s+/.test(trimmed)) {
-			const level = trimmed.match(/^#+/)![0].length;
-			// 方法/章节标题（h2~h4）前补分隔线，避免多个解法连成一片
-			if (level <= 4 && out.length > 0) {
-				out.push('<hr>');
-			}
-			out.push(`<h${level}>${renderInlineMarkdown(trimmed.replace(/^#+\s*/, ''), videoPageUrl)}</h${level}>`);
-			i++;
-		} else if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) {
-			out.push('<hr>');
-			i++;
-		} else if (/^>\s?/.test(trimmed)) {
-			const quote: string[] = [];
-			while (i < lines.length && /^>\s?/.test(lines[i].trim())) {
-				quote.push(lines[i].trim().replace(/^>\s?/, ''));
-				i++;
-			}
-			out.push(`<blockquote>${renderInlineMarkdown(quote.join(' '), videoPageUrl)}</blockquote>`);
-		} else if (trimmed.startsWith('|') && trimmed.endsWith('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
-			const header = splitTableRow(trimmed);
-			i += 2;
-			const rows: string[][] = [];
-			while (i < lines.length && lines[i].trim().startsWith('|') && lines[i].trim().endsWith('|')) {
-				rows.push(splitTableRow(lines[i]));
-				i++;
-			}
-			const thead = header.map(c => `<th>${renderInlineMarkdown(c, videoPageUrl)}</th>`).join('');
-			const tbody = rows.map(r => `<tr>${r.map(c => `<td>${renderInlineMarkdown(c, videoPageUrl)}</td>`).join('')}</tr>`).join('');
-			out.push(`<table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`);
-		} else {
-			const listMatch = trimmed.match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
-			if (listMatch) {
-				const items: { indent: number; ordered: boolean; text: string }[] = [];
-				while (i < lines.length) {
-					const lm = lines[i].trim().match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/);
-					if (!lm) {
-						break;
-					}
-					items.push({ indent: lm[1].length, ordered: /^\d+\./.test(lm[2]), text: lm[3] });
-					i++;
-				}
-				let listHtml = '';
-				const stack: { tag: string; indent: number }[] = [];
-				for (const item of items) {
-					const tag = item.ordered ? 'ol' : 'ul';
-					while (stack.length > 0 && item.indent <= stack[stack.length - 1].indent) {
-						listHtml += `</${stack.pop()!.tag}>`;
-					}
-					if (stack.length === 0 || stack[stack.length - 1].tag !== tag) {
-						listHtml += `<${tag}>`;
-						stack.push({ tag, indent: item.indent });
-					}
-					listHtml += `<li>${renderInlineMarkdown(item.text, videoPageUrl)}</li>`;
-				}
-				while (stack.length > 0) {
-					listHtml += `</${stack.pop()!.tag}>`;
-				}
-				out.push(listHtml);
-			} else {
-				// 段落：连续非空、非块级起点行合并为一段
-				const para: string[] = [trimmed];
-				i++;
-				while (i < lines.length) {
-					const t = lines[i].trim();
-					if (t === '' || /^#{1,6}\s+/.test(t) || /^>\s?/.test(t) || /^\s*```/.test(t) || /^(\s*)([-*+]|\d+\.)\s+/.test(t) || /^(-{3,}|\*{3,}|_{3,})\s*$/.test(t)) {
-						break;
-					}
-					para.push(t);
-					i++;
-				}
-				out.push(`<p>${renderInlineMarkdown(para.join(' '), videoPageUrl)}</p>`);
-			}
-		}
-	}
-	return out.join('\n');
-}
 
 // 状态栏项
 let statusBarItem: vscode.StatusBarItem;
 
 // highlight.js 本地资源（vendor/ 随扩展打包，.vscodeignore 未排除），
 // 在扩展端执行并直接产出高亮 HTML，webview 无需再运行任何高亮脚本
-let highlightJsContent: string | null = null;
-let hljsRuntime: any = null;
 
-function getHighlightJs(context: vscode.ExtensionContext): string | null {
-	if (highlightJsContent !== null) {
-		return highlightJsContent;
-	}
-	try {
-		highlightJsContent = fs.readFileSync(path.join(context.extensionPath, 'vendor', 'highlight.min.js'), 'utf8');
-		return highlightJsContent;
-	} catch (e) {
-		return null;
-	}
-}
 
 /** 在扩展端执行 vendored highlight.js（函数包裹避免 var 泄漏到全局），失败返回 null */
-function loadHljsRuntime(context: vscode.ExtensionContext): any {
-	try {
-		const js = getHighlightJs(context);
-		if (!js) {
-			return null;
-		}
-		return vm.runInThisContext(`(function () {${js}\n;return hljs;})()`, { filename: 'vendor/highlight.min.js' });
-	} catch (e) {
-		return null;
-	}
-}
 
 /** 语言标识 → highlight.js 语言名（py → python、cpp → cpp 等） */
-const HLJS_LANG_MAP: Record<string, string> = {
-	python3: 'python', python: 'python', py: 'python',
-	golang: 'go', go: 'go', 'c++': 'cpp', cpp: 'cpp', c: 'c',
-	java: 'java', javascript: 'javascript', js: 'javascript',
-	rust: 'rust', typescript: 'typescript', ts: 'typescript'
-};
 
-function highlightLangName(lang: string): string | null {
-	return HLJS_LANG_MAP[lang.toLowerCase()] || null;
-}
 
 // ffmpeg.wasm 核心（扩展端运行，TS→MP4 纯 remux；webview 只做原生播放）
 let ffmpegCorePromise: Promise<any> | null = null;
@@ -725,32 +442,39 @@ function getFfmpegCore(context: vscode.ExtensionContext): Promise<any> {
 }
 
 // 视频播放资源（阿里云 Aliplayer + hls.js，本地 vendor，不依赖 CDN）
-let playerFiles: { apiJs: string; apiCss: string; hlsJs: string } | null = null;
 
-function getPlayerFiles(context: vscode.ExtensionContext): { apiJs: string; apiCss: string; hlsJs: string } | null {
-	if (playerFiles) {
-		return playerFiles;
-	}
-	const base = path.join(context.extensionPath, 'vendor');
-	const apiJs = path.join(base, 'aliplayer-min.js');
-	const apiCss = path.join(base, 'aliplayer-min.css');
-	const hlsJs = path.join(base, 'hls.min.js');
-	if (!fs.existsSync(apiJs) || !fs.existsSync(apiCss) || !fs.existsSync(hlsJs)) {
-		return null;
-	}
-	playerFiles = { apiJs, apiCss, hlsJs };
-	return playerFiles;
-}
 
 export function activate(context: vscode.ExtensionContext) {
 	console.log('LeetCode Extension is now active!');
 
 	// 在扩展端加载 vendored highlight.js，题解代码高亮不依赖网络与 webview 脚本
-	hljsRuntime = loadHljsRuntime(context);
+	initHighlightJs(context);
 
 	const authManager = new AuthManager(context);
 	const leetCodeApi = new LeetCodeApi(authManager);
-	const hot100Provider = new Hot100Provider(leetCodeApi);
+	const hot100Provider = new Hot100Provider(leetCodeApi, context.globalState);
+
+	// 侧栏状态筛选（未做/已解决/尝试过），点击总进度行或命令面板均可触发
+	context.subscriptions.push(vscode.commands.registerCommand('leetcode.setStatusFilter', async () => {
+		const FILTERS: { label: string; description: string; value: StatusFilter }[] = [
+			{ label: '全部', description: '取消筛选，显示所有题目', value: 'all' },
+			{ label: '未做', description: '尚未尝试过的题目', value: 'not_started' },
+			{ label: '尝试过', description: '运行/提交未通过', value: 'attempted' },
+			{ label: '已解决', description: '提交通过（AC）', value: 'solved' }
+		];
+		const pick = await vscode.window.showQuickPick(FILTERS, { title: '状态筛选' });
+		if (pick) {
+			hot100Provider.setStatusFilter(pick.value);
+		}
+	}));
+
+	// 清空错题回顾队列
+	context.subscriptions.push(vscode.commands.registerCommand('leetcode.clearWrongQueue', async () => {
+		const choice = await vscode.window.showWarningMessage('清空错题回顾队列？', '清空');
+		if (choice === '清空') {
+			hot100Provider.clearWrongQueue();
+		}
+	}));
 
 	// 服务端判定会话失效时主动提示重新登录（toast 内建限频，避免每个过期请求都弹）
 	leetCodeApi.onSessionExpired = () => notifySessionExpired();
@@ -1213,689 +937,13 @@ export function activate(context: vscode.ExtensionContext) {
 				const difficulty = difficultyMap[q.difficulty] || q.difficulty;
 
 				// 生成带标签页的面板HTML
-const generatePanelHtml = (activeTab: string, solutionContent: string = '') => {
-						const playerFiles = getPlayerFiles(context);
-						const playerView = playerFiles ? {
-							css: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.apiCss)).toString(),
-							apiJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.apiJs)).toString(),
-							hlsJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.hlsJs)).toString()
-						} : null;
-						const playerAssetsJson = JSON.stringify(playerView ? {
-							apiJs: playerView.apiJs,
-							apiCss: playerView.css,
-							hlsJs: playerView.hlsJs
-						} : { apiJs: '', apiCss: '', hlsJs: '' });
-						return `
-						<!DOCTYPE html>
-					<html lang="zh-CN">
-					<head>
-						<meta charset="UTF-8">
-						<meta name="viewport" content="width=device-width, initial-scale=1.0">
-						<title>${q.questionFrontendId}. ${title}</title>
-						<style>
-							body {
-								font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-								padding: 0;
-								margin: 0;
-								line-height: 1.6;
-								color: var(--vscode-foreground);
-								background-color: var(--vscode-editor-background);
-							}
-							.tabs {
-								display: flex;
-								background: var(--vscode-tab-inactiveBackground);
-								border-bottom: 1px solid var(--vscode-panel-border);
-								position: sticky;
-								top: 0;
-								z-index: 100;
-							}
-							.tab {
-								padding: 12px 24px;
-								cursor: pointer;
-								border: none;
-								background: transparent;
-								color: var(--vscode-foreground);
-								font-size: 14px;
-								border-bottom: 2px solid transparent;
-								transition: all 0.2s;
-							}
-							.tab:hover {
-								background: var(--vscode-tab-hoverBackground);
-							}
-							.tab.active {
-								background: var(--vscode-tab-activeBackground);
-								border-bottom-color: var(--vscode-focusBorder);
-								font-weight: bold;
-							}
-							.content-wrapper {
-								padding: 20px;
-							}
-							h1 {
-								font-size: 1.5em;
-								margin-bottom: 10px;
-							}
-							.meta {
-								margin-bottom: 20px;
-								color: var(--vscode-descriptionForeground);
-							}
-							.difficulty-easy { color: #00b8a3; }
-							.difficulty-medium { color: #ffc01e; }
-							.difficulty-hard { color: #ff375f; }
-							/* 仅题目描述的"输入/输出"示例块（<pre>）保留背景，其余区域（提示等）无背景 */
-							.problem-content pre {
-								background-color: var(--vscode-textBlockQuote-background);
-								padding: 12px;
-								border-radius: 4px;
-								overflow-x: auto;
-							}
-							code {
-								font-family: 'Fira Code', Consolas, monospace;
-							}
-							.problem-content img {
-								max-width: 100%;
-							}
-							hr {
-								border: none;
-								border-top: 1px solid var(--vscode-panel-border);
-								margin: 20px 0;
-							}
-							.loading {
-								text-align: center;
-								padding: 40px;
-								color: var(--vscode-descriptionForeground);
-							}
-							.solution-section {
-								margin-bottom: 30px;
-								padding: 20px;
-								background: var(--vscode-textBlockQuote-background);
-								border-radius: 8px;
-							}
-							.solution-section h2 {
-								color: var(--vscode-textLink-foreground);
-								margin-top: 0;
-							}
-							.article-item {
-								padding: 15px;
-								background: var(--vscode-editor-background);
-								border-radius: 6px;
-								cursor: pointer;
-								margin-bottom: 10px;
-								border: 1px solid var(--vscode-panel-border);
-							}
-							.article-item:hover {
-								background: var(--vscode-list-hoverBackground);
-							}
-							.article-title {
-								font-weight: bold;
-								margin-bottom: 5px;
-							}
-							.article-meta {
-								font-size: 12px;
-								color: var(--vscode-descriptionForeground);
-							}
-							.hidden { display: none; }
-							/* 代码高亮样式 */
-							.solution-content pre {
-								position: relative;
-								background: var(--vscode-textPreformat-background);
-								padding: 16px;
-								border-radius: 6px;
-								overflow-x: auto;
-								margin: 16px 0;
-							}
-							.solution-content pre code {
-								font-family: 'Fira Code', Consolas, 'Courier New', monospace;
-								font-size: 14px;
-								line-height: 1.5;
-							}
-							.solution-content img {
-								max-width: 100%;
-								border-radius: 8px;
-								margin: 16px 0;
-							}
-							.solution-content h2, .solution-content h3 {
-								color: var(--vscode-textLink-foreground);
-								margin-top: 24px;
-							}
-							.solution-content blockquote {
-								border-left: 4px solid var(--vscode-textLink-foreground);
-								margin: 16px 0;
-								padding: 8px 16px;
-								background: var(--vscode-textBlockQuote-background);
-							}
-.solution-content ul, .solution-content ol {
-									padding-left: 24px;
-								}
-								.solution-content a {
-									color: var(--vscode-textLink-foreground);
-								}
-								/* 代码块复制按钮（右上角） */
-								.lc-copy {
-									position: absolute;
-									top: 6px;
-									right: 8px;
-									background: transparent;
-									border: none;
-									cursor: pointer;
-									font-size: 14px;
-									line-height: 1;
-									padding: 4px 6px;
-									border-radius: 4px;
-									color: var(--vscode-descriptionForeground);
-									opacity: 0.7;
-								}
-								.lc-copy:hover {
-									opacity: 1;
-									background: var(--vscode-tab-hoverBackground);
-								}
-								/* 高亮 token 一律透明背景，避免文字后出现难看的底色条 */
-								.solution-content pre code span,
-								.solution-content pre code .hljs-keyword,
-								.solution-content pre code .hljs-string,
-								.solution-content pre code .hljs-comment,
-								.solution-content pre code .hljs-title,
-								.solution-content pre code .hljs-number,
-								.solution-content pre code .hljs-built_in,
-								.solution-content pre code .hljs-literal,
-								.solution-content pre code .hljs-attr,
-								.solution-content pre code .hljs-type,
-								.solution-content pre code .hljs-params,
-								.solution-content pre code .hljs-variable,
-								.solution-content pre code .hljs-symbol,
-								.solution-content pre code .hljs-meta,
-								.solution-content pre code .hljs-regexp,
-								.solution-content pre code .hljs-quote,
-								.solution-content pre code .hljs-addition,
-								.solution-content pre code .hljs-doctag,
-								.solution-content pre code .hljs-selector-tag,
-								.solution-content pre code .hljs-name,
-								.solution-content pre code .hljs-attribute,
-								.solution-content pre code .hljs-template-variable,
-								.solution-content pre code .hljs-variable.language_ {
-									background: transparent !important;
-									box-shadow: none !important;
-								}
-							/* 代码块标签样式 */
-							.code-tabs {
-								display: flex;
-								gap: 4px;
-								margin-bottom: -1px;
-								flex-wrap: wrap;
-							}
-							.code-tab {
-								padding: 6px 12px;
-								background: var(--vscode-tab-inactiveBackground);
-								border: 1px solid var(--vscode-panel-border);
-								border-bottom: none;
-								border-radius: 4px 4px 0 0;
-								cursor: pointer;
-								font-size: 12px;
-							}
-							.code-tab.active {
-								background: var(--vscode-textPreformat-background);
-							}
-							.code-block {
-								display: none;
-							}
-							.code-block.active {
-								display: block;
-							}
-							/* KaTeX数学公式样式 */
-							.katex { font-size: 1.1em; }
-							/* 语言标签组样式 */
-							.lang-tabs {
-								display: flex;
-								flex-wrap: wrap;
-								gap: 4px;
-								margin-top: 16px;
-								margin-bottom: 0;
-							}
-							.lang-tab {
-								padding: 6px 14px;
-								background: var(--vscode-tab-inactiveBackground);
-								border: 1px solid var(--vscode-panel-border);
-								border-bottom: none;
-								border-radius: 6px 6px 0 0;
-								cursor: pointer;
-								font-size: 12px;
-								color: var(--vscode-foreground);
-							}
-							.lang-tab:hover {
-								background: var(--vscode-tab-hoverBackground);
-							}
-							.lang-tab.active {
-								background: var(--vscode-textPreformat-background);
-								font-weight: bold;
-								border-bottom: 1px solid var(--vscode-textPreformat-background);
-							}
-							.lang-code-block {
-								display: none;
-								margin-top: -1px;
-							}
-							.lang-code-block.active {
-								display: block;
-							}
-							.lang-code-block pre {
-								margin-top: 0;
-								border-radius: 0 6px 6px 6px;
-							}
-							.code-tabs-container {
-								margin: 16px 0;
-							}
-							/* 代码语法高亮配色：默认 GitHub Light（:root 变量），深色由 @media prefers-color-scheme 覆盖 */
-							.solution-content pre code {
-								color: var(--lc-base, #24292e);
-							}
-							.solution-content .hljs-keyword, .solution-content .hljs-literal, .solution-content .hljs-selector-tag, .solution-content .hljs-name {
-								color: var(--lc-keyword, #d73a49);
-							}
-							.solution-content .hljs-string, .solution-content .hljs-regexp, .solution-content .hljs-addition, .solution-content .hljs-char.escape_ {
-								color: var(--lc-string, #032f62);
-							}
-							.solution-content .hljs-comment, .solution-content .hljs-quote, .solution-content .hljs-meta, .solution-content .hljs-doctag {
-								color: var(--lc-comment, #6a737d);
-							}
-							.solution-content .hljs-title, .solution-content .hljs-title.class_, .solution-content .hljs-title.function_, .solution-content .hljs-section {
-								color: var(--lc-title, #6f42c1);
-							}
-							.solution-content .hljs-number, .solution-content .hljs-symbol, .solution-content .hljs-attr, .solution-content .hljs-attribute, .solution-content .hljs-variable, .solution-content .hljs-template-variable {
-								color: var(--lc-number, #005cc5);
-							}
-							.solution-content .hljs-built_in, .solution-content .hljs-type, .solution-content .hljs-params, .solution-content .hljs-variable.language_ {
-								color: var(--lc-built, #e36209);
-							}
-							:root {
-								--lc-base: #24292e;
-								--lc-keyword: #d73a49;
-								--lc-string: #032f62;
-								--lc-comment: #6a737d;
-								--lc-title: #6f42c1;
-								--lc-number: #005cc5;
-								--lc-built: #e36209;
-							}
-							body[data-lc-theme="dark"],
-								body[data-vscode-theme-kind="vscode-dark"],
-								body[data-vscode-theme-kind="vscode-high-contrast-dark"],
-								body[data-vscode-theme-kind="vscode-high-contrast"] {
-								--lc-base: #e6edf3;
-								--lc-keyword: #ff7b72;
-								--lc-string: #a5d6ff;
-								--lc-comment: #8b949e;
-								--lc-title: #d2a8ff;
-								--lc-number: #79c0ff;
-								--lc-built: #ffa657;
-							}
-							/* 兜底：任何主题下 token 背景一律透明 */
-							.solution-content pre code span,
-							.solution-content pre code .hljs-keyword,
-							.solution-content pre code .hljs-string,
-							.solution-content pre code .hljs-comment,
-							.solution-content pre code .hljs-title,
-							.solution-content pre code .hljs-number,
-							.solution-content pre code .hljs-built_in,
-							.solution-content pre code .hljs-literal,
-							.solution-content pre code .hljs-attr,
-							.solution-content pre code .hljs-type,
-							.solution-content pre code .hljs-params,
-							.solution-content pre code .hljs-variable,
-							.solution-content pre code .hljs-symbol,
-							.solution-content pre code .hljs-meta,
-							.solution-content pre code .hljs-regexp,
-							.solution-content pre code .hljs-quote,
-							.solution-content pre code .hljs-addition,
-							.solution-content pre code .hljs-doctag,
-							.solution-content pre code .hljs-selector-tag,
-							.solution-content pre code .hljs-name,
-							.solution-content pre code .hljs-attribute,
-							.solution-content pre code .hljs-template-variable,
-							.solution-content pre code .hljs-variable.language_ {
-								background: transparent !important;
-								box-shadow: none !important;
-							}
-							video.article-video {
-								max-width: 100%;
-								border-radius: 8px;
-								margin: 8px 0;
-							}
-							.article-video video {
-								width: 100%;
-								border-radius: 8px;
-								background: #000;
-								max-height: 480px;
-							}
-							.img-placeholder {
-								color: var(--vscode-descriptionForeground);
-							}
-							.video-link {
-								background: var(--vscode-button-background);
-								color: var(--vscode-button-foreground);
-								border: none;
-								padding: 10px 20px;
-								border-radius: 6px;
-								cursor: pointer;
-								font-size: 14px;
-								margin: 8px 0;
-							}
-							.video-link:hover {
-								background: var(--vscode-button-hoverBackground);
-							}
-							table {
-								border-collapse: collapse;
-								margin: 16px 0;
-							}
-							th, td {
-								border: 1px solid var(--vscode-panel-border);
-								padding: 6px 12px;
-							}
-							th {
-								background: var(--vscode-tab-inactiveBackground);
-							}
-							.tab.refresh-tab {
-								margin-left: auto;
-								display: flex;
-								align-items: center;
-								gap: 4px;
-								font-size: 13px;
-								color: var(--vscode-descriptionForeground);
-							}
-						</style>
-<!-- 加载 KaTeX 用于数学公式渲染（可选增强，加载失败时公式保留原文） -->
-							<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-							<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
-							<!-- 视频播放资源（Aliplayer/hls.js，本地 vendor）在点击视频时按需加载，不进首屏 -->
-							<!-- 代码语法高亮由扩展端渲染时完成（vendored highlight.js），webview 仅需配色变量 -->
-					</head>
-<body>
-							<div class="tabs">
-								<button class="tab ${activeTab === 'problem' ? 'active' : ''}" onclick="switchTab('problem')">📝 题目描述</button>
-								<button class="tab ${activeTab === 'solution' ? 'active' : ''}" onclick="switchTab('solution')">📖 题解</button>
-								<button class="tab refresh-tab" onclick="refreshCurrent()" title="刷新当前标签">🔄 刷新</button>
-							</div>
-						
-						<div class="content-wrapper">
-							<div id="problem-tab" class="${activeTab === 'problem' ? '' : 'hidden'}">
-								<h1>${q.questionFrontendId}. ${title}</h1>
-								<div class="meta">
-									<span class="difficulty-${q.difficulty.toLowerCase()}">${difficulty}</span>
-									 | 👍 ${q.likes} | 👎 ${q.dislikes}
-								</div>
-								<hr/>
-								<div class="problem-content">${questionContent}</div>
-							</div>
-							
-							<div id="solution-tab" class="${activeTab === 'solution' ? '' : 'hidden'}">
-								${solutionContent || '<div class="loading">点击"题解"标签加载题解内容...</div>'}
-							</div>
-						</div>
-						
-						<script>
-const vscode = acquireVsCodeApi();
-									let solutionLoaded = false;
-									let currentTab = '${activeTab}';
-									
-									// 代码主题判定：直接读代码块 pre 的准确背景（--vscode-textPreformat-background 已生效），
-									// 并把明/暗色板变量直接写入 :root 内联样式——不依赖选择器、属性或探针
-									(function() {
-										var LC_VARS = {
-											light: { base: '#24292e', keyword: '#d73a49', string: '#032f62', comment: '#6a737d', title: '#6f42c1', number: '#005cc5', built: '#e36209' },
-											dark: { base: '#e6edf3', keyword: '#ff7b72', string: '#a5d6ff', comment: '#8b949e', title: '#d2a8ff', number: '#79c0ff', built: '#ffa657' }
-										};
-										function readBg() {
-											var pre = document.querySelector('.solution-content pre, .problem-content pre');
-											if (pre) {
-												var c = getComputedStyle(pre).backgroundColor;
-												if (c && c !== 'transparent' && c.indexOf('rgba(0, 0, 0, 0)') !== 0) { return c; }
-											}
-											var sec = document.querySelector('.solution-section');
-											if (sec) {
-												var s = getComputedStyle(sec).backgroundColor;
-												if (s && s !== 'transparent') { return s; }
-											}
-											return '';
-										}
-										function applyLcTheme() {
-											var c = readBg();
-											var m = c.match(/\d+/g);
-											var dark = false;
-											if (m) {
-												var lum = 0.2126 * Number(m[0]) + 0.7152 * Number(m[1]) + 0.0722 * Number(m[2]);
-												dark = lum < 160;
-											}
-											var vars = dark ? LC_VARS.dark : LC_VARS.light;
-											document.documentElement.style.setProperty('--lc-base', vars.base);
-											document.documentElement.style.setProperty('--lc-keyword', vars.keyword);
-											document.documentElement.style.setProperty('--lc-string', vars.string);
-											document.documentElement.style.setProperty('--lc-comment', vars.comment);
-											document.documentElement.style.setProperty('--lc-title', vars.title);
-											document.documentElement.style.setProperty('--lc-number', vars.number);
-document.documentElement.style.setProperty('--lc-built', vars.built);
-												document.body.setAttribute('data-lc-theme', dark ? 'dark' : 'light');
-											}
-											applyLcTheme();
-										setTimeout(function() { applyLcTheme(); }, 500);
-										setTimeout(function() { applyLcTheme(); }, 2500);
-										var lastVal = '';
-										setInterval(function() {
-											var v = readBg();
-											if (v !== lastVal) {
-												lastVal = v;
-												applyLcTheme();
-											}
-										}, 1000);
-									})();
-
-								
-function switchTab(tab) {
-									currentTab = tab;
-									document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-								document.querySelector('.tab:nth-child(' + (tab === 'problem' ? '1' : '2') + ')').classList.add('active');
-								
-								document.getElementById('problem-tab').classList.toggle('hidden', tab !== 'problem');
-								document.getElementById('solution-tab').classList.toggle('hidden', tab !== 'solution');
-								
-								if (tab === 'solution' && !solutionLoaded) {
-									solutionLoaded = true;
-									vscode.postMessage({ type: 'loadSolution' });
-								}
-							}
-
-							// 刷新当前活动标签：题目描述 → 重新拉取并重建；题解 → 重新加载题解
-							function refreshCurrent() {
-								if (currentTab === 'solution') {
-									document.getElementById('solution-tab').innerHTML = '<div class="loading">加载题解中...</div>';
-									vscode.postMessage({ type: 'loadSolution' });
-								} else {
-									vscode.postMessage({ type: 'reloadProblem' });
-								}
-							}
-							
-							function openArticle(slug) {
-								vscode.postMessage({ type: 'openArticle', slug: slug });
-							}
-function selectLangTab(btn) {
-								var box = btn.closest('.code-tabs-container');
-								var tabs = box.querySelectorAll('.lang-tab');
-								var idx = Array.prototype.indexOf.call(tabs, btn);
-								tabs.forEach(function(t) { t.classList.remove('active'); });
-								box.querySelectorAll('.lang-code-block').forEach(function(b) { b.classList.remove('active'); });
-								btn.classList.add('active');
-								box.querySelectorAll('.lang-code-block')[idx].classList.add('active');
-							}
-							
-							// 复制代码块内容（标签页组内复制当前激活语言；纯文本取自 textContent，不受高亮 span 影响）
-							function copyCode(btn) {
-								var container = btn.closest('.code-tabs-container');
-								var code = null;
-								if (container) {
-									var active = container.querySelector('.lang-code-block.active code, .lang-code-block code');
-									code = container.querySelector('.lang-code-block.active code') || active;
-								}
-								if (!code) {
-									var pre = btn.closest('pre');
-									code = pre ? pre.querySelector('code') : null;
-								}
-								if (code) {
-									vscode.postMessage({ type: 'copyCode', text: code.textContent || '' });
-								}
-							}
-							
-							// 视频题解：请求扩展端查询阿里云 VOD playAuth 播放凭证，成功后用 Aliplayer 内嵌播放；
-							// 失败时降级为浏览器播放入口
-							function playArticleVideo(btn) {
-								btn.setAttribute('data-loading', '1');
-								btn.textContent = '⏳ 正在获取播放信息…';
-								btn.disabled = true;
-								vscode.postMessage({
-									type: 'playVideo',
-									uuid: btn.getAttribute('data-play-uuid'),
-									pageUrl: btn.getAttribute('data-page-url')
-								});
-							}
-							
-							function makeVideoBrowserFallback(pageUrl) {
-								var fb = document.createElement('button');
-								fb.className = 'video-link';
-								fb.textContent = '🎬 视频题解：在浏览器中播放';
-								fb.onclick = function() { vscode.postMessage({ type: 'openExternal', url: pageUrl }); };
-								return fb;
-							}
-							
-							// 视频播放资源按需加载：仅在点击视频时注入 Aliplayer/hls.js，避免影响题解首屏渲染
-							var LEETCODE_PLAYER_ASSETS = ${playerAssetsJson};
-							function loadPlayerScript(src, cb) {
-								if (!src) { cb(false); return; }
-								var s = document.createElement('script');
-								s.src = src;
-								s.onload = function() { cb(true); };
-								s.onerror = function() { cb(false); };
-								document.head.appendChild(s);
-							}
-							function ensurePlayer(kind, cb) {
-								if (kind === 'hls' && typeof Hls !== 'undefined') { cb(true); return; }
-								if (kind === 'aliplayer' && typeof Aliplayer !== 'undefined') { cb(true); return; }
-								loadPlayerScript(kind === 'hls' ? LEETCODE_PLAYER_ASSETS.hlsJs : LEETCODE_PLAYER_ASSETS.apiJs, cb);
-							}
-							function ensureAliplayerCss() {
-								if (!LEETCODE_PLAYER_ASSETS.apiCss || document.querySelector('link[data-lc-aliplayer-css]')) return;
-								var l = document.createElement('link');
-								l.rel = 'stylesheet';
-								l.href = LEETCODE_PLAYER_ASSETS.apiCss;
-								l.setAttribute('data-lc-aliplayer-css', '1');
-								document.head.appendChild(l);
-							}
-							
-							function attachAliplayer(container, msg) {
-								ensureAliplayerCss();
-								ensurePlayer('aliplayer', function(ok) {
-									if (!ok || typeof Aliplayer === 'undefined' || !msg.videoId || !msg.playAuth) {
-										container.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
-										return;
-									}
-									try {
-										new Aliplayer({
-											id: container.id,
-											vid: msg.videoId,
-											playauth: msg.playAuth,
-											cover: msg.coverUrl || '',
-											width: '100%',
-											height: '480px',
-											autoplay: true,
-											playsinline: true,
-											preload: true
-										});
-									} catch (e) {
-										container.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
-									}
-								});
-							}
-							
-							function setupVideoPlayer(container, msg) {
-								function debug(info) { vscode.postMessage({ type: 'videoDebug', info: info }); }
-								// 编解码能力检测（Electron 可能缺少 H.264/AAC 解码器）
-								var probe = document.createElement('video');
-								debug('codec.avc1=' + probe.canPlayType('video/mp4; codecs="avc1.42E01E"').toUpperCase() +
-									' codec.hev1=' + probe.canPlayType('video/mp4; codecs="hev1.1.6.L93.90"').toUpperCase() +
-									' h264Ts=' + probe.canPlayType('video/mp2t; codecs="avc1.42E01E"').toUpperCase());
-								if (!msg.videoUrl) {
-									attachAliplayer(container, msg);
-									return;
-								}
-								var v = document.createElement('video');
-								v.controls = true;
-								v.autoplay = true;
-								v.playsInline = true;
-								v.poster = msg.coverUrl || '';
-								container.appendChild(v);
-								var isHls = (msg.videoUrl || '').indexOf('.m3u8') !== -1;
-								var fallbackOnFail = function() { attachAliplayer(container, msg); };
-								if (isHls) {
-									ensurePlayer('hls', function(ok) {
-										if (!ok || typeof Hls === 'undefined' || !Hls.isSupported()) {
-											fallbackOnFail();
-											return;
-										}
-										try {
-											var hls = new Hls({ enableWorker: false });
-											hls.loadSource(msg.videoUrl);
-											hls.attachMedia(v);
-											hls.on(Hls.Events.ERROR, function(evt, data) {
-												debug('hls.' + (data && data.details) + ' fatal=' + (data && data.fatal) + ' network=' + (data && data.networkDetails) + ' err=' + (data && data.error));
-												if (data && data.fatal) {
-													try { hls.destroy(); } catch (e2) {}
-													fallbackOnFail();
-												}
-											});
-											v.play().catch(function() {});
-										} catch (e) {
-											debug('hls.new.' + e);
-											fallbackOnFail();
-										}
-									});
-									return;
-								}
-								v.addEventListener('error', fallbackOnFail);
-								v.src = msg.videoUrl;
-								v.play().catch(function() {});
-							}
-							
-							window.addEventListener('message', function(ev) {
-								var msg = ev.data;
-								if (!msg || msg.type !== 'videoReady') return;
-								var btn = document.querySelector('.video-link[data-loading="1"]');
-								if (!btn) return;
-								var container = document.createElement('div');
-								container.className = 'article-video';
-								container.id = 'lc-video-' + Date.now();
-								btn.replaceWith(container);
-								setupVideoPlayer(container, msg);
-							});
-							
-							// 若 KaTeX 从 CDN 加载成功，则渲染 $$/$ 数学公式；失败时公式保留为原文
-							try {
-								if (typeof renderMathInElement !== 'undefined') {
-									renderMathInElement(document.body, {
-										delimiters: [
-											{ left: '$$', right: '$$', display: true },
-											{ left: '$', right: '$', display: false }
-										],
-										ignoredTags: ['pre', 'code', 'script', 'textarea'],
-										throwOnError: false
-									});
-								}
-							} catch (e) {}
-					</script>
-					</body>
-</html>
-					`;
-					};
 
 					// 题目内容中的外链图片下载到本地缓存（webview 直连外部图可能失败）
 					questionContent = await localizeContentImages(questionContent, panel, context, leetCodeApi);
-					panel.webview.html = generatePanelHtml('problem');
+					panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'problem');
 
 				// 处理消息（外层兜底：任何异常都提示用户，避免静默失败）
-				panel.webview.onDidReceiveMessage(async (message) => {
+				panel.webview.onDidReceiveMessage(async (message: PanelToExtensionMessage) => {
 					try {
 						await handlePanelMessage(message, panel, q);
 					} catch (error) {
@@ -1906,7 +954,7 @@ function selectLangTab(btn) {
 				/**
 				 * 题解面板消息处理（抽出来便于外层统一兜底错误提示）
 				 */
-				async function handlePanelMessage(message: any, panel: vscode.WebviewPanel, q: any) {
+				async function handlePanelMessage(message: PanelToExtensionMessage, panel: vscode.WebviewPanel, q: any) {
 					if (message.type === 'loadSolution') {
 						try {
 // 官方题解与社区题解列表并行拉取，避免串行叠加等待
@@ -1928,20 +976,29 @@ const officialArticleEdge = communityArticles.find((e: any) => e.node?.byLeetcod
 									try {
 										const articleData = await leetCodeApi.getSolutionArticle(officialArticleEdge.node.slug);
 										const article = articleData?.data?.solutionArticle;
-										if (article && article.content) {
-											const cleanedContent = sanitizeSolutionContent(article.content);
-											// 文章页 URL 需要数字 topic.id（仅 slug 会被 SPA 跳回题解列表）
-											const articleTopicId = officialArticleEdge.node?.topic?.id;
-											const solutionPageUrl = articleTopicId
-												? `https://leetcode.cn/problems/${q.titleSlug}/solutions/${articleTopicId}/${officialArticleEdge.node.slug}/`
-												: `https://leetcode.cn/problems/${q.titleSlug}/solutions/${officialArticleEdge.node.slug}/`;
-											officialArticleHtml = `
-												<div class="solution-section">
-													<h2>📖 官方题解</h2>
-													<div class="article-meta" style="margin-bottom:12px;">👑 LeetCode 官方 | 👍 ${article.upvoteCount}</div>
-													<div class="solution-content">${renderMarkdownToHtml(cleanedContent, 'all', true, solutionPageUrl)}</div>
-												</div>
-											`;
+if (article && article.content) {
+												const cleanedContent = sanitizeSolutionContent(article.content);
+												// 文章页 URL 需要数字 topic.id（仅 slug 会被 SPA 跳回题解列表）
+												const articleTopicId = officialArticleEdge.node?.topic?.id;
+												const solutionPageUrl = articleTopicId
+													? `https://leetcode.cn/problems/${q.titleSlug}/solutions/${articleTopicId}/${officialArticleEdge.node.slug}/`
+													: `https://leetcode.cn/problems/${q.titleSlug}/solutions/${officialArticleEdge.node.slug}/`;
+												const articleAuthor = article.author?.profile?.realName || article.author?.username || 'LeetCode';
+												const articleAvatar = article.author?.profile?.userAvatar || '';
+												const articleDate = article.createdAt ? formatArticleDate(article.createdAt) : '';
+												officialArticleHtml = `
+													<div class="solution-section">
+														<h2>📖 官方题解</h2>
+														<div class="article-head">
+															${articleAvatar ? `<img class="article-avatar" src="${escapeHtml(articleAvatar)}" alt="" onerror="this.remove()" />` : ''}
+															<span>${escapeHtml(articleAuthor)}</span>
+															<span class="article-badge">👑 官方</span>
+															${articleDate ? `<span>${articleDate}</span>` : ''}
+															<span>👍 ${article.upvoteCount}</span>
+														</div>
+														<div class="solution-content">${renderMarkdownToHtml(cleanedContent, 'all', true, solutionPageUrl)}</div>
+													</div>
+												`;
 										}
 									} catch (e) {
 										// 官方文章拉取失败时静默跳过，回退到 question.solution 的文字内容
@@ -1999,17 +1056,24 @@ const officialArticleEdge = communityArticles.find((e: any) => e.node?.byLeetcod
 										try {
 											const topArticleData = await leetCodeApi.getSolutionArticle(pickEdge.node.slug);
 											const topArticle = topArticleData?.data?.solutionArticle;
-											if (topArticle && topArticle.content) {
-												const cleanedTop = sanitizeSolutionContent(topArticle.content);
-												const topAuthor = topArticle.author?.profile?.realName || topArticle.author?.username || '匿名';
-												const topArticleHtml = renderMarkdownToHtml(cleanedTop, 'all');
-											solutionHtml += `
-												<div class="solution-section">
-													<h2>⭐ 社区精选题解（含代码）</h2>
-													<div class="article-meta" style="margin-bottom:12px;">👍 ${topArticle.upvoteCount} | 作者: ${topAuthor}</div>
-													<div class="solution-content">${topArticleHtml}</div>
-												</div>
-											`;
+if (topArticle && topArticle.content) {
+													const cleanedTop = sanitizeSolutionContent(topArticle.content);
+													const topAuthor = topArticle.author?.profile?.realName || topArticle.author?.username || '匿名';
+													const topAvatar = topArticle.author?.profile?.userAvatar || '';
+													const topDate = topArticle.createdAt ? formatArticleDate(topArticle.createdAt) : '';
+													const topArticleHtml = renderMarkdownToHtml(cleanedTop, 'all');
+												solutionHtml += `
+													<div class="solution-section">
+														<h2>⭐ 社区精选题解（含代码）</h2>
+														<div class="article-head">
+															${topAvatar ? `<img class="article-avatar" src="${escapeHtml(topAvatar)}" alt="" onerror="this.remove()" />` : ''}
+															<span>${escapeHtml(topAuthor)}</span>
+															${topDate ? `<span>${topDate}</span>` : ''}
+															<span>👍 ${topArticle.upvoteCount}</span>
+														</div>
+														<div class="solution-content">${topArticleHtml}</div>
+													</div>
+												`;
 										}
 									} catch (e) {
 										// 拉取精选题解失败时静默跳过，不影响其余内容
@@ -2021,9 +1085,9 @@ const officialArticleEdge = communityArticles.find((e: any) => e.node?.byLeetcod
 							}
 
 							solutionHtml = await localizeContentImages(solutionHtml, panel, context, leetCodeApi);
-							panel.webview.html = generatePanelHtml('solution', solutionHtml);
+							panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', solutionHtml);
 						} catch (error) {
-							panel.webview.html = generatePanelHtml('solution', `<div class="loading">加载题解失败: ${escapeHtml(errMsg(error))}</div>`);
+							panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', `<div class="loading">加载题解失败: ${escapeHtml(errMsg(error))}</div>`);
 						}
 } else if (message.type === 'reloadProblem') {
 							// 右键刷新题目描述：重新拉取题目内容（KaTeX/CDN 加载失败时重建页面即可恢复）
@@ -2034,10 +1098,10 @@ const officialArticleEdge = communityArticles.find((e: any) => e.node?.byLeetcod
 									Object.assign(q, fresh);
 									questionContent = fresh.translatedContent || fresh.content;
 								}
-								panel.webview.html = generatePanelHtml('problem');
+								panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'problem');
 							} catch (error) {
 								vscode.window.showErrorMessage(`刷新题目描述失败: ${errMsg(error)}`);
-								panel.webview.html = generatePanelHtml('problem');
+								panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'problem');
 							}
 						} else if (message.type === 'playVideo') {
 							try {
@@ -2045,7 +1109,7 @@ const officialArticleEdge = communityArticles.find((e: any) => e.node?.byLeetcod
 								if (!/^[0-9a-fA-F-]{20,40}$/.test(uuid)) {
 									throw new Error('无效的视频标识');
 								}
-const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string; playAuth: string } | null } = { value: null };
+const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string; playAuth: string; audioB64?: string } | null } = { value: null };
 							await vscode.window.withProgress({
 								location: vscode.ProgressLocation.Notification,
 								title: '正在下载视频题解…（首次约 30MB，会缓存）',
@@ -2059,60 +1123,103 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 								}
 								const dirUri = vscode.Uri.joinPath(context.globalStorageUri, 'video');
 								await vscode.workspace.fs.createDirectory(dirUri);
-								const mp4Uri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '.mp4');
-								const tsUri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '.ts');
+const mp4Uri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '_v3.mp4');
+									const mp3Uri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '_v3.mp3');
+									const tsUri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '.ts');
 								let mp4Stat: vscode.FileStat | null = null;
+								let mp3Stat: vscode.FileStat | null = null;
 								try {
 									mp4Stat = await vscode.workspace.fs.stat(mp4Uri);
 								} catch (e) {
 									mp4Stat = null;
 								}
-								if (!mp4Stat || mp4Stat.size === 0) {
-									// 1) 下载合并 HLS 分段为连续 TS
-									const merged = await leetCodeApi.getVideoMergedTs(uuid);
-									const tsBuf = Buffer.isBuffer(merged.buffer) ? merged.buffer : Buffer.from(merged.buffer);
-									await vscode.workspace.fs.writeFile(tsUri, new Uint8Array(tsBuf));
-									// 2) 扩展端 ffmpeg remux：TS → MP4（原生 <video> 可直接播放）
+								try {
+									mp3Stat = await vscode.workspace.fs.stat(mp3Uri);
+								} catch (e) {
+									mp3Stat = null;
+								}
+								if (!mp4Stat || mp4Stat.size === 0 || !mp3Stat || mp3Stat.size === 0) {
+									// 1) 取原始 TS：优先已缓存，否则下载合并 HLS 分段
+									let tsBuf: Buffer | null = null;
+									try {
+										tsBuf = Buffer.from(await vscode.workspace.fs.readFile(tsUri));
+									} catch (e) {
+										tsBuf = null;
+									}
+									if (!tsBuf || tsBuf.length === 0) {
+										const merged = await leetCodeApi.getVideoMergedTs(uuid);
+										tsBuf = Buffer.isBuffer(merged.buffer) ? merged.buffer : Buffer.from(merged.buffer);
+										await vscode.workspace.fs.writeFile(tsUri, new Uint8Array(tsBuf));
+									}
+	// 2) 扩展端 ffmpeg 转码。画面：MP4 仅视频流（-an）；声音：MP3 提取——Chromium 对
+									// <video> 音频输出在 VS Code autoplayPolicy 下静默（none-decoded），声音统一
+									// 改由 webview WebAudio 解码播放（decodeAudioData 对 mp3 100% 支持，
+									// 且经 postMessage base64 传输，不依赖 fetch/CORS）
 									const core = await getFfmpegCore(context);
 									try {
 										core.FS.writeFile('/in.ts', new Uint8Array(tsBuf));
-										const rc = core.exec('-i', '/in.ts', '-c', 'copy', '-movflags', '+faststart', '/out.mp4');
-										const out = core.FS.readFile('/out.mp4');
-										try { core.FS.deleteFile('/in.ts'); core.FS.deleteFile('/out.mp4'); } catch (e2) { /* 忽略清理失败 */ }
-										if (rc !== 0 || !out || out.length < 1024) {
-											throw new Error('remux 返回码 ' + rc + ' 输出 ' + (out ? out.length : 0));
+										if (!mp4Stat || mp4Stat.size === 0) {
+											const rc1 = core.exec('-i', '/in.ts', '-c:v', 'copy', '-an', '-movflags', '+faststart', '/out.mp4');
+											const out1 = core.FS.readFile('/out.mp4');
+											try { core.FS.deleteFile('/out.mp4'); } catch (e2) { /* 忽略清理失败 */ }
+											if (rc1 !== 0 || !out1 || out1.length < 1024) {
+												throw new Error('画面转码返回码 ' + rc1 + ' 输出 ' + (out1 ? out1.length : 0));
+											}
+											await vscode.workspace.fs.writeFile(mp4Uri, new Uint8Array(out1));
 										}
-										await vscode.workspace.fs.writeFile(mp4Uri, new Uint8Array(out));
+										if (!mp3Stat || mp3Stat.size === 0) {
+											const rc2 = core.exec('-i', '/in.ts', '-vn', '-c:a', 'libmp3lame', '-b:a', '64k', '-ar', '44100', '-ac', '2', '/out.mp3');
+											const out2 = core.FS.readFile('/out.mp3');
+											try { core.FS.deleteFile('/out.mp3'); } catch (e2) { /* 忽略清理失败 */ }
+											if (rc2 !== 0 || !out2 || out2.length < 1024) {
+												throw new Error('音频转码返回码 ' + rc2 + ' 输出 ' + (out2 ? out2.length : 0));
+											}
+											await vscode.workspace.fs.writeFile(mp3Uri, new Uint8Array(out2));
+										}
+										try { core.FS.deleteFile('/in.ts'); } catch (e2) { /* 忽略清理失败 */ }
 									} catch (e) {
 										throw new Error('视频转码失败: ' + (e instanceof Error ? e.message : String(e)));
 									}
+								}
+								let audioB64: string | undefined;
+								try {
+									audioB64 = Buffer.from(await vscode.workspace.fs.readFile(mp3Uri)).toString('base64');
+								} catch (e) {
+									audioB64 = undefined;
 								}
 								playHolder.value = {
 									videoUrl: panel.webview.asWebviewUri(mp4Uri).toString(),
 									videoId: meta.videoInfo.videoId,
 									coverUrl: meta.videoInfo.coverUrl || '',
-									playAuth: meta.playAuth
+									playAuth: meta.playAuth,
+									audioB64
 								};
 							});
 							const play = playHolder.value;
 							if (!play) {
 								throw new Error('获取视频失败');
 							}
-							panel.webview.postMessage({
+							const readyMsg: ExtensionToPanelMessage = {
 								type: 'videoReady',
 								videoUrl: play.videoUrl,
 								videoId: play.videoId,
 								playAuth: play.playAuth,
 								coverUrl: play.coverUrl || '',
+								audioData: play.audioB64,
 								pageUrl: message.pageUrl
-							});
+							};
+							panel.webview.postMessage(readyMsg);
 						} catch (error) {
 							vscode.window.showWarningMessage(`视频题解加载失败：${errMsg(error) || '未知错误'}`);
-							panel.webview.postMessage({ type: 'videoReady', error: true, pageUrl: message.pageUrl });
+							panel.webview.postMessage({ type: 'videoReady', error: true, pageUrl: message.pageUrl } satisfies ExtensionToPanelMessage);
 						}
 					} else if (message.type === 'videoDebug') {
 							console.log('[videoDebug]', message.info);
-							vscode.window.showInformationMessage(`视频调试: ${message.info}`);
+							if (typeof message.info === 'string' && message.info.indexOf('AUDIO_PROBLEM') !== -1) {
+								vscode.window.showWarningMessage('视频音频轨解析失败，请反馈此问题');
+							} else if (typeof message.info === 'string' && message.info.indexOf('AUDIO_DIAG') !== -1) {
+								vscode.window.showWarningMessage('视频无声诊断: ' + message.info);
+							}
 						} else if (message.type === 'openExternal' && typeof message.url === 'string' && message.url.startsWith('https://leetcode.cn/')) {
 							// 视频题解等无法在 webview 内播放的内容，交给系统默认浏览器打开
 							vscode.env.openExternal(vscode.Uri.parse(message.url));
@@ -2135,7 +1242,7 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 										</div>
 									`;
 								articleHtml = await localizeContentImages(articleHtml, panel, context, leetCodeApi);
-									panel.webview.html = generatePanelHtml('solution', articleHtml);
+									panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', articleHtml);
 							}
 						} catch (error) {
 							vscode.window.showErrorMessage(`加载题解失败: ${errMsg(error)}`);
@@ -2211,20 +1318,23 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 				}
 
 				// 轮询获取结果（退避至 ~90s，状态栏显示等待时长）
-				const check = await pollJudgeResult(leetCodeApi, interpretId);
-				if (check) {
-					reportJudgeResult('测试', check, {
-						ok: check.run_success && !!check.correct_answer,
-						fileUri: editor.document.uri,
-						inputFallback: problem.testCases
-					});
-				} else {
+const check = await pollJudgeResult(leetCodeApi, interpretId);
+					if (check) {
+						reportJudgeResult('测试', check, {
+							ok: check.run_success && !!check.correct_answer,
+							fileUri: editor.document.uri,
+							inputFallback: problem.testCases,
+							titleSlug: problem.titleSlug
+						});
+						// 测试（含通过）只算"尝试过"，不算"已解决"（以提交结果为准）
+						hot100Provider.recordJudgeResult(problem.titleSlug, { solved: false });
+					} else {
 					vscode.window.showWarningMessage('测试超时：判题未在 90 秒内返回，可稍后重试');
 				}
 			} catch (error) {
 				vscode.window.showErrorMessage(`测试出错: ${errMsg(error)}`);
 			} finally {
-				judgeInFlight = false;
+				releaseJudge();
 			}
 		});
 	});
@@ -2291,17 +1401,21 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 
 				// 轮询获取结果（退避至 ~90s，状态栏显示等待时长）
 				const check = await pollJudgeResult(leetCodeApi, submissionId);
-				if (check) {
-					reportJudgeResult('提交', check, {
-						ok: check.status_msg === 'Accepted',
-						fileUri: editor.document.uri,
-						submissionUrl
-					});
-					// 通过后刷新题目列表以更新状态
-					if (check.status_msg === 'Accepted') {
-						hot100Provider.refresh();
-					}
-				} else {
+// 提交代码后：更新侧栏状态（通过=已解决并移出错题队列，失败=尝试过并记录错题）
+					if (check) {
+							const accepted = check.status_msg === 'Accepted';
+							reportJudgeResult('提交', check, {
+								ok: accepted,
+								fileUri: editor.document.uri,
+								submissionUrl,
+								titleSlug: problem.titleSlug
+							});
+							hot100Provider.recordJudgeResult(problem.titleSlug, {
+								solved: accepted,
+								reason: check.status_msg,
+								recordWrong: true
+							});
+						} else {
 					const choice = await vscode.window.showWarningMessage(
 						'提交超时：判题未在 90 秒内返回，结果可在 LeetCode 提交页查看',
 						'打开提交页'
@@ -2313,7 +1427,7 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 			} catch (error) {
 				vscode.window.showErrorMessage(`提交出错: ${errMsg(error)}`);
 			} finally {
-				judgeInFlight = false;
+				releaseJudge();
 			}
 		});
 	});
@@ -2332,15 +1446,13 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 			return;
 		}
 
-		const filePath = editor.document.uri.fsPath;
-		const dirPath = filePath.substring(0, filePath.lastIndexOf('\\') !== -1 ? filePath.lastIndexOf('\\') : filePath.lastIndexOf('/'));
-		const fileName = path.basename(filePath);
-
 		// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态导致驱动错题
-		const problem = await resolveProblemFromFile(leetCodeApi, context, fileName, currentProblem);
-
-		// 获取当前代码
-		const userCode = editor.document.getText();
+		const problem = await resolveProblemFromFile(
+			leetCodeApi,
+			context,
+			path.basename(editor.document.uri.fsPath),
+			currentProblem
+		);
 
 		// 拉取题面以提取各示例的期望输出（本地运行/调试时逐示例比对）
 		let expectedOutputs: string[] = [];
@@ -2352,83 +1464,138 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 			// 拿不到期望输出时仅运行不比对
 		}
 
-		// 生成调试文件（Python 为 importlib 驱动，其他语言为自包含模板；统一放入 debug/ 目录）
-		const debugFile = generateDebugFile(
-			problem.lang,
-			problem.questionId || '0',
-			problem.titleSlug,
-			problem.testCases || '',
-			userCode,
-			filePath,
-			expectedOutputs
-		);
+		await runDebugWithCases(editor, problem, problem.testCases || '', expectedOutputs, false);
+	});
 
-		if (!debugFile) {
-			vscode.window.showWarningMessage(`暂不支持 ${problem.lang} 的本地调试，目前支持 Python3 / Java / C++ / JavaScript / TypeScript / Go / Rust`);
+	// ==================== 用判题失败用例本地调试命令 ====================
+	const debugFailedDisposable = vscode.commands.registerCommand('leetcode.debugFailedCase', async () => {
+		const failedCases = getLastJudgeCases()?.cases?.filter(c => !c.passed && c.known && c.input) ?? [];
+		if (failedCases.length === 0) {
+			const choice = await vscode.window.showInformationMessage(
+				'暂无可用判题失败用例。先运行测试/提交触发失败，或自定义用例测试失败后，可把用例带入本地调试',
+				'自定义用例测试'
+			);
+			if (choice === '自定义用例测试') {
+				vscode.commands.executeCommand('leetcode.customTest');
+			}
 			return;
 		}
 
-		// 写入调试文件（debug/ 子目录，避免散落在题解文件旁）
-		const debugDir = path.join(dirPath, 'debug');
-		const debugFilePath = path.join(debugDir, debugFile.fileName);
-		const debugFileUri = vscode.Uri.file(debugFilePath);
+		const editor = await getProblemCodeEditor(context);
+		if (!editor) {
+			vscode.window.showErrorMessage('请先从题目列表打开一道题目，或聚焦题解代码文件后再试');
+			return;
+		}
 
-		try {
-			await vscode.workspace.fs.createDirectory(vscode.Uri.file(debugDir));
-			await vscode.workspace.fs.writeFile(debugFileUri, Buffer.from(debugFile.content, 'utf8'));
+		const currentProblem = context.workspaceState.get<any>('currentProblem');
+		if (!currentProblem) {
+			vscode.window.showErrorMessage('请先从题目列表中打开一道题目');
+			return;
+		}
 
-			// Python：直接启动 VS Code 原生调试会话（等价于"Python Debugger: Debug Python File"）。
-			// 驱动通过 importlib 加载题解代码文件，断点可以直接打在题解文件上，无需打开驱动文件
-			if (debugFile.fileName.endsWith('.py')) {
-				const pythonDebugger =
-					vscode.extensions.getExtension('ms-python.debugpy') ||
-					vscode.extensions.getExtension('ms-python.python');
-				if (!pythonDebugger) {
-					const choice = await vscode.window.showWarningMessage(
-						'未检测到 Python 调试扩展，需要先安装 "Python Debugger"（ms-python.debugpy）才能使用 Python 本地调试',
-						'安装扩展'
-					);
-					if (choice === '安装扩展') {
-						// workbench.extensions.installExtension 自 VS Code 1.75 起可用，静默安装
-						await vscode.commands.executeCommand('workbench.extensions.installExtension', 'ms-python.debugpy');
-						vscode.window.showInformationMessage('Python Debugger 已安装，请再次点击"本地调试"');
-					}
-					return;
-				}
-				const started = await vscode.debug.startDebugging(vscode.workspace.workspaceFolders?.[0], {
-					type: 'python',
-					name: 'LeetCode Hot 100 本地调试',
-					request: 'launch',
-					program: debugFilePath,
-					cwd: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? dirPath,
-					console: 'internalConsole',
-					// pydevd 文件过滤器（主通道；debugpy 后端在 debuggee 进程启动时读取）：
-					// 命中的文件帧完全不 trace——断点不触发、单步直接穿过、调用栈隐藏。
-					// 把驱动自身排除后，调试的停止点只出现在题解代码文件里（F10 步出函数
-					// 不会停进 debug.py，而是直接跑到下一个断点/结束），与"断点打在题解文件"
-					// 的 importlib 机制配套。绝对路径匹配为逐段 normcase + 盘符大小写不敏感。
-					// 兜底通道：生成的驱动启动时自行向 pydevd 注册同一路径的排除规则
-					// （debugUtils 的 _lc_exclude_debug_self），env 未传到时会在那里补上并
-					// 在调试控制台打状态行。修改这两处后务必重载扩展主机，旧代码不会带过滤。
-					env: {
-						PYDEVD_FILTERS: JSON.stringify({ [debugFilePath]: true })
-					}
-				});
-				if (!started) {
-					vscode.window.showErrorMessage('调试会话启动失败，请检查 Python 解释器是否已配置（Python 扩展插件）');
-				}
+		const problem = await resolveProblemFromFile(
+			leetCodeApi,
+			context,
+			path.basename(editor.document.uri.fsPath),
+			currentProblem
+		);
+		// 失败用例来自上次判题的题目；当前文件是另一题时不能混用（防用例套错函数）
+		const lastJudgeForCase = getLastJudgeCases();
+		if (lastJudgeForCase?.titleSlug && lastJudgeForCase.titleSlug !== problem.titleSlug) {
+			vscode.window.showWarningMessage(
+				`上次判题是「${lastJudgeForCase.titleSlug}」，与当前文件的「${problem.titleSlug}」不是同一题，请先打开对应题解文件`
+			);
+			return;
+		}
+
+		let chosen: JudgeCaseInfo;
+		if (failedCases.length === 1) {
+			chosen = failedCases[0];
+		} else {
+			const options = failedCases.map(c => ({
+				label: `用例 ${c.index}｜输入: ${oneLine(c.input, 60)}`,
+				description: c.expected ? `期望: ${oneLine(c.expected, 40)}` : undefined,
+				info: c
+			}));
+			const pick = await vscode.window.showQuickPick(options, { placeHolder: '选择要代入本地调试的失败用例' });
+			if (!pick) {
 				return;
 			}
+			chosen = pick.info;
+		}
 
-			// 打开调试文件（非 Python 语言的模板需要用户补充测试代码）
-			const doc = await vscode.workspace.openTextDocument(debugFileUri);
+		// 只比对该失败用例的期望值（题面示例期望与自定义用例不按索引对齐，不掺入）
+		await runDebugWithCases(editor, problem, chosen.input, chosen.expected ? [chosen.expected] : [], true);
+	});
+
+	// ==================== 自定义用例测试命令 ====================
+	const customTestDisposable = vscode.commands.registerCommand('leetcode.customTest', async () => {
+		// 检查登录状态
+		const isLoggedIn = await authManager.isLoggedIn();
+		if (!isLoggedIn) {
+			const login = await vscode.window.showWarningMessage(
+				'您需要先登录才能运行自定义用例测试',
+				'登录'
+			);
+			if (login === '登录') {
+				vscode.commands.executeCommand('leetcode.login');
+			}
+			return;
+		}
+
+		// 当前文件就是本命令打开的用例文件：立即以当前内容重跑（编辑保存会自动跑，
+		// 想在不改动的情况下再跑一次时用本命令）
+		const active = vscode.window.activeTextEditor;
+		const activeEntry = active ? customCaseFiles.get(active.document.uri.fsPath) : undefined;
+		if (active && activeEntry) {
+			await runCustomCaseWith(leetCodeApi, activeEntry.problem, activeEntry.solutionPath, active.document.getText());
+			return;
+		}
+
+		const currentProblem = context.workspaceState.get<any>('currentProblem');
+		if (!currentProblem) {
+			vscode.window.showErrorMessage('请先从题目列表中打开一道题目');
+			return;
+		}
+
+		let problem = currentProblem;
+		let solutionPath: string | undefined = currentProblem.filePath;
+		const editor = await getProblemCodeEditor(context);
+		if (editor) {
+			solutionPath = editor.document.uri.fsPath;
+			// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态导致用例套错题
+			problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(solutionPath), currentProblem);
+		}
+		if (!solutionPath) {
+			vscode.window.showErrorMessage('请先从题目列表打开一道题目，或聚焦题解代码文件后再试');
+			return;
+		}
+
+		const dirPath = solutionPath.substring(0, solutionPath.lastIndexOf('\\') !== -1 ? solutionPath.lastIndexOf('\\') : solutionPath.lastIndexOf('/'));
+		// 用例文件名以字母开头（customcase_ 前缀），parseProblemFileName 不会误解析它；
+		// 每个题目一个文件，复用上次编辑的用例
+		const caseDir = path.join(dirPath, 'debug');
+		const casePath = path.join(caseDir, `customcase_${problem.questionId || '0'}_${problem.titleSlug}.txt`);
+
+		try {
+			await vscode.workspace.fs.createDirectory(vscode.Uri.file(caseDir));
+			if (!fs.existsSync(casePath)) {
+				// 新建：预填最近一次同题失败用例输入（无则官方示例），用户可直接保存运行
+				const lastJudgeForCase = getLastJudgeCases();
+				const failedSame = lastJudgeForCase && lastJudgeForCase.titleSlug === problem.titleSlug
+					? lastJudgeForCase.cases.filter(c => !c.passed && c.known && c.input)
+					: [];
+				const prefill = failedSame.length > 0 ? failedSame[0].input : (problem.testCases || '');
+				await vscode.workspace.fs.writeFile(vscode.Uri.file(casePath), Buffer.from(prefill, 'utf8'));
+			}
+			customCaseFiles.set(casePath, { problem, solutionPath });
+			const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(casePath));
 			await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
-
 			vscode.window.showInformationMessage(
-				`调试文件已创建：debug/${debugFile.fileName}\n修改测试参数后按 F5/运行 执行`
+				'自定义用例文件已就绪（每行一个参数值：如两数之和分两行 [2,7,11,15] 与 9）。\n修改后 Ctrl+S 保存即自动在线判题；再运行本命令可立即重跑'
 			);
 		} catch (error) {
-			vscode.window.showErrorMessage(`创建调试文件失败: ${errMsg(error)}`);
+			vscode.window.showErrorMessage(`创建自定义用例文件失败: ${errMsg(error)}`);
 		}
 	});
 
@@ -2738,7 +1905,7 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 				`;
 
 				// 处理点击社区题解
-				panel.webview.onDidReceiveMessage(async (message) => {
+				panel.webview.onDidReceiveMessage(async (message: PanelToExtensionMessage) => {
 					if (message.type === 'openArticle') {
 						try {
 							const articleData = await leetCodeApi.getSolutionArticle(message.slug);
@@ -2801,21 +1968,32 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 		}
 	});
 
-	// ==================== 查看最近一次原始判题响应（JSON 编辑器，可折叠） ====================
-	const showRawJudgeDisposable = vscode.commands.registerCommand('leetcode.showRawJudge', () => showRawJudgeResponse());
+// ==================== 查看最近一次原始判题响应（JSON 编辑器，可折叠） ====================
+		const showRawJudgeDisposable = vscode.commands.registerCommand('leetcode.showRawJudge', () => showRawJudgeResponse());
 
-	context.subscriptions.push(
-		showRawJudgeDisposable,
-		loginDisposable,
-		logoutDisposable,
-		refreshDisposable,
-		openProblemDisposable,
-		testDisposable,
-		submitDisposable,
-		debugDisposable,
-		runDebugDisposable,
-		viewSolutionDisposable
-	);
+		// 自定义用例文件保存即自动在线判题（仅命中本扩展创建/打开的用例文件，不影响其他文件保存）
+		const customCaseSaveDisposable = vscode.workspace.onDidSaveTextDocument((doc) => {
+			const entry = customCaseFiles.get(doc.uri.fsPath);
+			if (entry) {
+				void runCustomCaseWith(leetCodeApi, entry.problem, entry.solutionPath, doc.getText());
+			}
+		});
+
+		context.subscriptions.push(
+			showRawJudgeDisposable,
+			loginDisposable,
+			logoutDisposable,
+			refreshDisposable,
+			openProblemDisposable,
+			testDisposable,
+			submitDisposable,
+			debugDisposable,
+			debugFailedDisposable,
+			customTestDisposable,
+			customCaseSaveDisposable,
+			runDebugDisposable,
+			viewSolutionDisposable
+		);
 }
 
 /**
