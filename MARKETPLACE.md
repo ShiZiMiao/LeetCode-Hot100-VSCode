@@ -107,8 +107,8 @@ src/
 
 ## 支持语言
 
-**刷题 14 种**：Python3、Java、C++、C、C#、JavaScript、TypeScript、Go、Rust、Kotlin、Swift、Ruby、Scala、PHP
-**本地调试驱动 7 种**：Python3（原生调试会话）、Java、C++、JavaScript、TypeScript、Go、Rust
+- **刷题 14 种**：Python3、Java、C++、C、C#、JavaScript、TypeScript、Go、Rust、Kotlin、Swift、Ruby、Scala、PHP
+- **本地调试驱动 7 种**：Python3（原生调试会话）、Java、C++、JavaScript、TypeScript、Go、Rust
 
 ## 开发
 
