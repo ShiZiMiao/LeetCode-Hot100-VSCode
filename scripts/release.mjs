@@ -32,10 +32,10 @@ const fail = (msg) => {
   process.exit(1);
 };
 const step = (msg) => console.log('\n▶ ' + msg);
-const run = (cmd) => {
+const run = (cmd, env = {}) => {
   console.log('  $ ' + cmd);
   if (!DRY) {
-    execSync(cmd, { stdio: 'inherit', shell: true });
+    execSync(cmd, { stdio: 'inherit', shell: true, env: { ...process.env, ...env } });
   }
 };
 
@@ -97,13 +97,17 @@ fs.writeFileSync(notesFile, releaseNotes, 'utf8');
 run(`gh release create v${version} ${vsix} --title "LeetCode Hot100 Pro v${version}" --notes-file ${JSON.stringify(notesFile)}`);
 
 step('Open VSX 发布');
-if (process.env.OVSX_PAT) {
-  run(`ovsx publish ${vsix}`);
+// token 优先级：环境变量 OVSX_PAT > .zcode/ovsx-token（git 忽略的本地文件）
+const tokenFile = path.join(process.cwd(), '.zcode', 'ovsx-token');
+const ovsxPat = process.env.OVSX_PAT || (fs.existsSync(tokenFile) ? fs.readFileSync(tokenFile, 'utf8').trim() : '');
+if (ovsxPat) {
+  // token 经环境变量传给 ovsx，不打印到日志
+  run(`ovsx publish ${vsix}`, { OVSX_PAT: ovsxPat });
   console.log('  Open VSX 发布完成（新扩展首次约 1~2 分钟过审，可用 curl https://open-vsx.org/api/ShiZiMiao/leetcode/latest 验证）');
 } else {
-  console.log('  未检测到 OVSX_PAT，跳过。手动发布：');
+  console.log('  未检测到 OVSX_PAT 与 .zcode/ovsx-token，跳过。手动发布：');
   console.log('  1) open-vsx.org → 头像 → Access Tokens → Generate new token');
-  console.log('  2) OVSX_PAT=<token> ovsx publish ' + vsix);
+  console.log('  2) OVSX_PAT=<token> ovsx publish ' + vsix + '，或把 token 写入 .zcode/ovsx-token（git 忽略）');
 }
 
 console.log('\n✔ 发布流程执行完毕。最后一步需要手动完成：');
