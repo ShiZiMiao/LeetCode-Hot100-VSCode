@@ -8,7 +8,7 @@
 
 - **原仓库**：`https://github.com/Imzhou-tju/Hot100-for-VSCode`（MIT，原作者）
 - **当前仓库（fork 修复版）**：`https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode`
-- **当前版本**：`0.1.8`
+- **当前版本**：`0.1.10`
 - **技术栈**：TypeScript、Node.js（>=16）、VS Code Extension API（>=1.107）、pnpm
 - **运行时依赖**：`playwright-core`（登录一键浏览器功能，`require` 走 `vendor/playwright-core/` 副本）。**打包不经过 node_modules**（vsce 带 `--no-dependencies`），vendor 副本须先同步（见打包步骤）；历史死依赖 `marked` 已移除。webview 渲染全部扩展端自研 + 本地 vendor 资源。
 
@@ -103,10 +103,7 @@ src/
 │   ├── progressStats.ts  刷题进度统计/状态筛选纯逻辑
 │   ├── wrongQueue.ts     错题回顾队列纯逻辑（去重/排序/限量/时间格式化）
 │   ├── htmlUtil.ts       escapeHtml/errMsg/formatArticleDate 共用工具
-│   ├── languageUtils.ts  语言检测/文件扩展名
-│   └── webviewUtils.ts   题解 Webview HTML 生成（死代码）
-├── commands/
-│   └── solutionCommands.ts  题解命令（目前未被主流程使用/基本是死代码）
+│   └── languageUtils.ts  语言检测/文件扩展名（仅 python3，leetcode.cn 的 'python' slug 是 Python 2 判题环境，勿加回）
 ├── unit/                 纯逻辑单测（node:test，不依赖 vscode；`pnpm run test:unit` 运行编译产物）
 └── test/
     └── extension.test.ts （vscode-test 集成测试，glob 只匹配 out/test/**，勿把单测文件放进去）
@@ -134,7 +131,7 @@ src/
 
 4. **webview 渲染的可靠性**：早期实现依赖 webview 里 CDN 加载的 `marked`（新版可能 API 变化/加载失败）和脚本执行顺序（`processCodeTabs` 定义在页面底部，早期内联代码块脚本可能先于其执行），容易导致代码不渲染。**当前方案** `renderMarkdownToHtml()` 直接在扩展端（TypeScript）完成完整 Markdown → 静态 HTML 渲染（标题/列表/表格/图片/代码块等），不依赖 CDN marked，确保内容一定能显示。`codeMode: 'all'` 时保留全部语言并生成标签页（`preferredFirst` 时优先语言 Python3/Python → C/C++ → 其他 排首位并默认选中，用于官方题解，接近网页版切换体验；社区题解保持原文顺序）；`'preferred'` 时只保留优先语言（用于 question.solution 文字回退）。KaTeX 公式为 webview 内 CDN 可选增强（加载失败不影响内容显示）；highlight.js（`vendor/highlight.min.js`，GitHub 明/暗配色由页面脚本按主题亮度切换 CSS 变量）为本地资源随扩展打包，题解代码语法高亮不依赖网络。注意 `.vscodeignore` 排除了 `src/**`，本地资源必须放 `vendor/` 或 `out/` 才会进 VSIX。视频题解先尝试内嵌 `<video>`（`https://video.leetcode.cn/{资产id}.mp4`），若 CDN 防盗链拒绝（video 元素触发 error）自动降级为浏览器播放入口。
 
-5. **运行时依赖现状**：唯一运行时依赖是 `playwright-core`（登录），运行时 `require(context.extensionPath + '/vendor/playwright-core')`，打包走 vendor 副本（见打包步骤第 6 条），VSIX 始终不含 node_modules。历史死依赖 `marked` 已于 0.1.9 移除（主流程不 require、webview 不加载，只 `webviewUtils.ts` 死代码注释提及 CDN），勿再加回。
+5. **运行时依赖现状**：唯一运行时依赖是 `playwright-core`（登录），运行时 `require(context.extensionPath + '/vendor/playwright-core')`，打包走 vendor 副本（见打包步骤第 6 条），VSIX 始终不含 node_modules。历史死依赖 `marked` 已于 0.1.9 移除（主流程不 require、webview 不加载），勿再加回。
 6. **TLS 证书校验为严格模式（0.1.9 起恢复）**：所有 https 请求不再 `rejectUnauthorized: false`。代理空闲切断导致的瞬断由"超时 + `agent:false` 禁复用 + `isTransientNetworkError` 幂等重试"兜底（判定表见 `utils/networkRetry.ts` 单测）。若用户环境有 MITM 代理导致证书报错，会透出原始错误信息，不要重新关闭校验。
 7. **判题在途忙碌锁与轮询预算**：`judgeInFlight` 全局锁防测试/提交并发（`tryBeginJudge` 占位、withProgress 回调 finally 释放）；`pollJudgeResult` 退避轮询（1s 起 ×1.5 封顶 5s，预算 ~90s），期间状态栏 `judgeStatusBar` 显示已等待秒数。新增判题类命令务必复用这套，不要另起 while 循环。
 

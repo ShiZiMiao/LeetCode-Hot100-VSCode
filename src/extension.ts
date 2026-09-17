@@ -329,8 +329,25 @@ async function resolveProblemFromFile(
 	if (!currentProblem) {
 		return currentProblem;
 	}
+	// 注意 py 必须映射 python3：leetcode.cn 的 'python' 是 Python 2 判题环境（官方模板
+	// 为 class Solution(object) + docstring 注解），注解语法会直接 SyntaxError
+	const langMap: Record<string, string> = {
+		py: 'python3', js: 'javascript', ts: 'typescript', java: 'java',
+		cpp: 'cpp', c: 'c', go: 'golang', rs: 'rust',
+		cs: 'csharp', kt: 'kotlin', swift: 'swift', rb: 'ruby', scala: 'scala', php: 'php'
+	};
+	const extMatch = fileName.match(/\.([a-z0-9]+)$/i);
+	const ext = extMatch ? extMatch[1].toLowerCase() : '';
 	const parsed = parseProblemFileName(fileName);
 	if (!parsed || parsed.titleSlug === currentProblem.titleSlug) {
+		// 旧版本 langMap 曾把 .py 映射成 python（Python 2）并写入 state：lang 按当前文件
+		// 扩展名归一（.py → python3；其他语言文件同样可以从脏值纠正），避免继续以错误语言提交
+		const extLang = langMap[ext];
+		if (currentProblem.lang === 'python' && extLang) {
+			const healed = { ...currentProblem, lang: extLang };
+			context.workspaceState.update('currentProblem', healed);
+			return healed;
+		}
 		return currentProblem;
 	}
 	try {
@@ -339,12 +356,6 @@ async function resolveProblemFromFile(
 		if (!q) {
 			return currentProblem;
 		}
-		const langMap: Record<string, string> = {
-			py: 'python', js: 'javascript', ts: 'typescript', java: 'java',
-			cpp: 'cpp', c: 'c', go: 'golang', rs: 'rust'
-		};
-		const extMatch = fileName.match(/\.([a-z]+)$/i);
-		const ext = extMatch ? extMatch[1].toLowerCase() : '';
 		const problem = {
 			titleSlug: q.titleSlug || parsed.titleSlug,
 			questionId: q.questionId,

@@ -2,6 +2,14 @@
 
 All notable changes to the "leetcode" extension will be documented in this file.
 
+## 0.1.11
+
+- **修复 .py 误以 Python 2 提交**：leetcode.cn 的 `python` 语言是 Python 2 判题环境（注解语法直接 SyntaxError），此前部分流程会把 .py 文件按 Python 2 提交——现象是本地调试通过、远程测试/提交报 `def ...` 行语法错误（如第 15 题）。现在 .py 统一按 **python3** 提交；语言选择器移除 Python 2 条目（二者同为 .py 扩展名，极易误选）；此前被写入的错误语言状态会在测试/提交时按当前文件扩展名自动纠正
+- **修复官方题解多语言代码块丢失**：C++ 模板代码（`vector<vector<int>>`）与注释里的 `b<c` 会被题解渲染前处理的标签清理正则误删/误换，连带 Python/Java/Go 的代码块与围栏行被删除，多语言标签页不显示（第 15 题三数之和等）。现在代码围栏与行内代码不再参与 HTML 标签清理，第 15 题题解恢复 4 语言标签页（Python 优先默认选中）
+- **修复语言映射不全**：文件身份解析按扩展名补齐 C#/Kotlin/Swift/Ruby/Scala/PHP，避免这些语言的文件以其他语言提交
+- **修复侧栏视图图标缺失**：`resources/leetcode.svg` 曾被排除出 VSIX（打包清单遗漏），安装版树视图图标回退为默认图标
+- **工程**：删除无引用的 `getLanguageInfo` 死导出；AGENTS.md 架构文档同步（移除已删除的旧死代码条目）
+
 ## 0.1.10
 
 - **题解公式修复**：LaTeX 数学公式不再显示为源码、乘号不再丢失——修复了 Markdown 斜体规则与公式内星号（`*`）的冲突，公式 `$...$`/`$$...$$` 现在正常渲染（KaTeX），即使公式源文本也完整保留

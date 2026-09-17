@@ -13,9 +13,10 @@ export interface LanguageInfo {
 }
 
 // LeetCode支持的语言列表
+// 注意只有 python3 一个 Python 条目：leetcode.cn 的 'python' slug 是 Python 2 判题环境，
+// 与 Python3 同为 .py 扩展名，在语言选择器里并列极易误选，且注解语法无法通过判题
 export const SUPPORTED_LANGUAGES: LanguageInfo[] = [
     { slug: 'python3', displayName: 'Python3', extension: 'py' },
-    { slug: 'python', displayName: 'Python', extension: 'py' },
     { slug: 'java', displayName: 'Java', extension: 'java' },
     { slug: 'cpp', displayName: 'C++', extension: 'cpp' },
     { slug: 'c', displayName: 'C', extension: 'c' },
@@ -44,13 +45,6 @@ export function getExtension(langSlug: string): string {
 }
 
 /**
- * 根据语言slug获取语言信息
- */
-export function getLanguageInfo(langSlug: string): LanguageInfo | undefined {
-    return slugToLanguage.get(langSlug);
-}
-
-/**
  * 让用户选择编程语言
  * @param availableSnippets 题目支持的代码片段列表
  * @returns 选择的语言slug，如果取消则返回undefined
@@ -72,8 +66,8 @@ export async function selectLanguage(availableSnippets: { lang: string; langSlug
         }
     }
 
-    // 按常用语言排序（Python, Java, C++ 优先）
-    const priorityOrder = ['python3', 'python', 'java', 'cpp', 'javascript', 'typescript', 'go', 'c'];
+    // 按常用语言排序（Python, Java, C++ 优先；Python2 的 python slug 已移除）
+    const priorityOrder = ['python3', 'java', 'cpp', 'javascript', 'typescript', 'go', 'c'];
     items.sort((a, b) => {
         const aIndex = priorityOrder.indexOf(a.detail || '');
         const bIndex = priorityOrder.indexOf(b.detail || '');

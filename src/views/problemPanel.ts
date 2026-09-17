@@ -56,6 +56,27 @@ export async function localizeContentImages(html: string, panel: vscode.WebviewP
 
 function htmlToMarkdown(content: string): string {
 	let s = content;
+	// 代码围栏先整体抽成占位符再清理标签，否则下面的兜底正则会把代码里的尖括号当
+	// HTML 标签误删/误换（C++ 模板 vector<vector<int>>、注释里的 b<c 均会被命中，
+	// 甚至跨行吞掉后续语言的围栏行，导致多语言代码块无法生成标签页）
+	const codeFences: string[] = [];
+	s = s.replace(/```[\s\S]*?```/g, (m) => {
+		codeFences.push(m);
+		return `@@LCCODE${codeFences.length - 1}@@`;
+	});
+	// 行内代码（反引号 span 与 <code> 标签）同样抽占位符：内容里的尖括号/星号也会被
+	// 下面的标签与行内规则误伤（如 `vector<int>` 被 <i> 规则替换为 vector*）
+	const inlineCodes: string[] = [];
+	s = s.replace(/`[^`\n]+`/g, (m) => {
+		inlineCodes.push(m);
+		return `@@LCINLINE${inlineCodes.length - 1}@@`;
+	});
+	s = s.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, (m) => {
+		// 以反引号 span 的形式还原，与下方 <code>→` 的转换保持等价
+		const inner = m.replace(/^<code[^>]*>/i, '').replace(/<\/code>$/i, '');
+		inlineCodes.push(`\`${inner}\``);
+		return `@@LCINLINE${inlineCodes.length - 1}@@`;
+	});
 	s = s.replace(/<br\s*\/?>/gi, '\n');
 	s = s.replace(/<\/p>\s*/gi, '\n\n');
 	s = s.replace(/<p[^>]*>/gi, '');
@@ -77,6 +98,9 @@ function htmlToMarkdown(content: string): string {
 	s = s.replace(/<\/?(span|div)[^>]*>/gi, '');
 	s = s.replace(/<\/?[a-zA-Z][^>]*>/g, ''); // 兜底：移除其余未知标签
 	s = s.replace(/<!(\[)/g, '!$1'); // 部分文章正文带 <![img](...) 包裹，还原为 ![img](...)
+	// 还原代码围栏与行内代码（占位符不含 < > * 等字符，清理正则改写不到；?? '' 仅兜底）
+	s = s.replace(/@@LCINLINE(\d+)@@/g, (_, idx) => inlineCodes[Number(idx)] ?? '');
+	s = s.replace(/@@LCCODE(\d+)@@/g, (_, idx) => codeFences[Number(idx)] ?? '');
 	return s;
 }
 
