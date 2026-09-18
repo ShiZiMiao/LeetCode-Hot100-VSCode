@@ -10,6 +10,7 @@ import * as vm from 'vm';
 import { createHash } from 'crypto';
 import { LeetCodeApi } from '../core/leetcodeApi';
 import { escapeHtml, formatArticleDate } from '../utils/htmlUtil';
+import { parseSimilarQuestions, difficultyZhOf } from '../utils/similarQuestions';
 
 export function sanitizeSolutionContent(content: string): string {
 	if (!content) {
@@ -19,37 +20,72 @@ export function sanitizeSolutionContent(content: string): string {
 }
 
 export async function localizeContentImages(html: string, panel: vscode.WebviewPanel, context: vscode.ExtensionContext, api: LeetCodeApi): Promise<string> {
-	const srcs = [...new Set([...html.matchAll(/src="(https?:\/\/[^"]+)"/gi)].map(m => m[1]))];
-	if (srcs.length === 0) {
+	// 收集所有远程图片：<img src> 与动画帧播放器 data-frames 属性（| 分隔的帧 URL）
+	const srcs = new Set<string>();
+	for (const m of html.matchAll(/src="(https?:\/\/[^"]+)"/gi)) {
+		srcs.add(m[1]);
+	}
+	for (const m of html.matchAll(/data-frames="([^"]+)"/gi)) {
+		for (const url of m[1].split('|')) {
+			if (/^https?:\/\//i.test(url)) {
+				srcs.add(url);
+			}
+		}
+	}
+	if (srcs.size === 0) {
 		return html;
 	}
 	const dirUri = vscode.Uri.joinPath(context.globalStorageUri, 'img');
 	await vscode.workspace.fs.createDirectory(dirUri);
-	let out = html;
+
+	const fileUriOf = new Map<string, vscode.Uri>();
+	const pending: string[] = [];
 	for (const src of srcs) {
+		const extMatch = src.match(/\.(png|jpe?g|gif|webp|svg)(\?|$)/i);
+		const ext = extMatch ? '.' + extMatch[1].toLowerCase() : '.png';
+		const hash = createHash('sha1').update(src).digest('hex').slice(0, 16);
+		const fileUri = vscode.Uri.joinPath(dirUri, hash + ext);
+		fileUriOf.set(src, fileUri);
+		let stat: vscode.FileStat | null = null;
 		try {
-			const extMatch = src.match(/\.(png|jpe?g|gif|webp|svg)(\?|$)/i);
-			const ext = extMatch ? '.' + extMatch[1].toLowerCase() : '.png';
-			const hash = createHash('sha1').update(src).digest('hex').slice(0, 16);
-			const fileUri = vscode.Uri.joinPath(dirUri, hash + ext);
-			let stat: vscode.FileStat | null = null;
-			try {
-				stat = await vscode.workspace.fs.stat(fileUri);
-			} catch (e) {
-				stat = null;
-			}
-			if (!stat || stat.size === 0) {
-				const buf = await api.downloadBinaryRaw(src);
-				if (!buf || buf.length === 0) {
-					continue;
-				}
-				await vscode.workspace.fs.writeFile(fileUri, new Uint8Array(buf));
-			}
-			const localUri = panel.webview.asWebviewUri(fileUri).toString();
-			out = out.split(src).join(localUri);
+			stat = await vscode.workspace.fs.stat(fileUri);
 		} catch (e) {
-			// 单张图失败保留原地址，不阻断其余内容
+			stat = null;
 		}
+		if (!stat || stat.size === 0) {
+			pending.push(src);
+		}
+	}
+
+	// 未缓存的图片并发下载（限 6 路）：官方题解动画有 30+ 帧图，串行下载会让"刷新"
+	// 长时间停在加载中；单张失败保留原地址，不影响其余内容
+	const succeeded = new Map<string, string>();
+	for (const src of srcs) {
+		if (!pending.includes(src)) {
+			succeeded.set(src, panel.webview.asWebviewUri(fileUriOf.get(src)!).toString());
+		}
+	}
+	const CONCURRENCY = 6;
+	let next = 0;
+	const workers = Array.from({ length: Math.min(CONCURRENCY, pending.length) }, async () => {
+		while (next < pending.length) {
+			const src = pending[next++];
+			try {
+				const buf = await api.downloadBinaryRaw(src);
+				if (buf && buf.length > 0) {
+					await vscode.workspace.fs.writeFile(fileUriOf.get(src)!, new Uint8Array(buf));
+					succeeded.set(src, panel.webview.asWebviewUri(fileUriOf.get(src)!).toString());
+				}
+			} catch (e) {
+				// 单张图失败保留原地址，不阻断其余内容
+			}
+		}
+	});
+	await Promise.all(workers);
+
+	let out = html;
+	for (const [src, localUri] of succeeded) {
+		out = out.split(src).join(localUri);
 	}
 	return out;
 }
@@ -140,13 +176,15 @@ function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 		mathParts.push(m);
 		return `@@MATH${mathParts.length - 1}@@`;
 	});
-	// LeetCode 官方文章动画帧序列：![1200](url),![1200](url),...（alt=该帧停留毫秒数），
-	// 渲染为与官网一致的帧播放器（黑条控件：播放/暂停、上一帧、下一帧、页码），
-	// 帧增删由 webview 脚本按 data-interval 轮播；同时吞掉 <![...]> 包裹符残留的 >
-	s = s.replace(/!\[(\d+)\]\(([^)\s]+)\)(?:,!\[(\d+)\]\(([^)\s]+)\))+&gt;?/g, (m) => {
+	// LeetCode 官方文章动画帧序列：![fig1](url),![fig2](url),...,![figN](url)>
+	// 或旧格式 ![1200](url),![1200](url),...（alt=该帧停留毫秒数）；包裹符残留的 >
+	// 经 escapeHtml 后为 &gt;。渲染为与官网一致的帧播放器（黑条控件：播放/暂停、
+	// 上一帧、下一帧、页码），帧增删由 webview 脚本按 data-interval 轮播
+	s = s.replace(/!\[([^\]\s(),]+)\]\(([^)\s]+)\)(?:,!\[([^\]\s(),]+)\]\(([^)\s]+)\))+&gt;?/g, (m) => {
 		const frames = m.replace(/&gt;?$/, '').split(',').map((seg) => {
-			const fm = seg.match(/!\[(\d+)\]\(([^)\s]+)\)/);
-			return { ms: Number(fm![1]), url: fm![2] };
+			const fm = seg.match(/!\[([^\]\s(),]+)\]\(([^)\s]+)\)/);
+			// alt 为 figN 等非数字时取默认间隔 1200ms（旧格式 alt 是停留毫秒数）
+			return { ms: Number(fm![1]) || 1200, url: fm![2] };
 		});
 		const interval = frames[0].ms || 1200;
 		return `<span class="lc-anim" data-interval="${interval}" data-frames="${frames.map(f => escapeHtml(f.url)).join('|')}">`
@@ -201,6 +239,25 @@ function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 	}
 	// 主题配色由 CSS @media (prefers-color-scheme) 自动跟随 VS Code 主题，渲染侧不固化任何主题类
 	return `<pre class="lc-pre"><button class="lc-copy" title="复制代码" onclick="copyCode(this)">⧉</button><code class="${cls}">${inner}</code></pre>`;
+}
+
+/**
+ * 相似题目区块（题面页尾部）：题面接口 similarQuestions 为 JSON 字符串，
+ * 条目无题号，点击经 openSimilarProblem 消息转扩展端打开
+ */
+function renderSimilarQuestionsHtml(q: any): string {
+    const list = parseSimilarQuestions(q?.similarQuestions);
+    if (list.length === 0) {
+        return '';
+    }
+    const items = list.map(s => {
+        const name = s.translatedTitle || s.title;
+        const diffZh = difficultyZhOf(s.difficulty);
+        const label = `${s.paidOnly ? '🔒' : ''}${name}${diffZh && diffZh !== name ? `（${diffZh}）` : ''}`;
+        // data-* 承载数据，onclick 只传元素：标题/难度含引号也不破坏属性
+        return `<button class="similar-item" data-slug="${escapeHtml(s.titleSlug)}" data-title="${escapeHtml(name)}" data-diff="${escapeHtml(s.difficulty)}" title="${escapeHtml(s.title)}${s.paidOnly ? '（会员题）' : ''}" onclick="openSimilarProblem(this)">${escapeHtml(label)}</button>`;
+    }).join('');
+    return `<hr/><div class="similar-section"><h3>🧩 相似题目</h3><div class="similar-list">${items}</div></div>`;
 }
 
 function codeTabOrder(lang: string): number {
@@ -459,9 +516,14 @@ export const generatePanelHtml = (
 							apiCss: playerView.css,
 							hlsJs: playerView.hlsJs
 						} : { apiJs: '', apiCss: '', hlsJs: '' });
+						const similarHtml = renderSimilarQuestionsHtml(q);
+						// 每次生成唯一 nonce：VS Code webview 对内容完全相同的 html 再次赋值不触发导航
+						//（iframe src 未变、DOM 保留），刷新重建的页面必须带新 nonce 才能显示出来
+						const nonce = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 						return `
 						<!DOCTYPE html>
 					<html lang="zh-CN">
+					<!-- lc-nonce:${nonce} -->
 					<head>
 						<meta charset="UTF-8">
 						<meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -753,6 +815,29 @@ export const generatePanelHtml = (
 								font-size: 12px;
 								background: var(--vscode-tab-inactiveBackground);
 								border: 1px solid var(--vscode-panel-border);
+							}
+							/* 相似题目区块 */
+							.similar-section h3 {
+								color: var(--vscode-textLink-foreground);
+								margin: 16px 0 10px;
+							}
+							.similar-list {
+								display: flex;
+								flex-wrap: wrap;
+								gap: 8px;
+							}
+							.similar-item {
+								padding: 6px 12px;
+								border-radius: 6px;
+								font-size: 13px;
+								cursor: pointer;
+								background: var(--vscode-button-secondaryBackground, var(--vscode-tab-inactiveBackground));
+								color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+								border: 1px solid var(--vscode-panel-border);
+								transition: background 0.15s;
+							}
+							.similar-item:hover {
+								background: var(--vscode-list-hoverBackground);
 							}
 							/* 语言标签组样式 */
 							.lang-tabs {
@@ -1056,6 +1141,7 @@ export const generatePanelHtml = (
 									<div class="tag-chips">${(q.topicTags || []).map((t: any) => `<span class="tag-chip">${escapeHtml(t.translatedName || t.name)}</span>`).join('')}</div>
 									<hr/>
 									<div class="problem-content">${questionContent}</div>
+									${similarHtml}
 								</div>
 							
 							<div id="solution-tab" class="${activeTab === 'solution' ? '' : 'hidden'}">
@@ -1065,7 +1151,8 @@ export const generatePanelHtml = (
 						
 						<script>
 const vscode = acquireVsCodeApi();
-									let solutionLoaded = false;
+									// 重建页（solution 模式）已内嵌内容：视为已加载，避免再点"题解"标签重复拉取重建
+									let solutionLoaded = ${activeTab === 'solution' && solutionContent ? 'true' : 'false'};
 									let currentTab = '${activeTab}';
 									
 									// 代码主题判定：直接读代码块 pre 的准确背景（--vscode-textPreformat-background 已生效），
@@ -1146,6 +1233,16 @@ function switchTab(tab) {
 							
 							function openArticle(slug) {
 								vscode.postMessage({ type: 'openArticle', slug: slug });
+							}
+
+							// 相似题目：从 data-* 读题解 slug/标题/难度，交给扩展端打开
+							function openSimilarProblem(btn) {
+								vscode.postMessage({
+									type: 'openSimilarProblem',
+									titleSlug: btn.getAttribute('data-slug') || '',
+									title: btn.getAttribute('data-title') || '',
+									difficulty: btn.getAttribute('data-diff') || ''
+								});
 							}
 function selectLangTab(btn) {
 								var box = btn.closest('.code-tabs-container');

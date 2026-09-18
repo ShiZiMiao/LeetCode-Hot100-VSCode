@@ -14,7 +14,8 @@ export type PanelToExtensionMessage =
 	| { type: 'videoDebug'; info: string }
 	| { type: 'openExternal'; url: string }
 	| { type: 'copyCode'; text: string }
-	| { type: 'openArticle'; slug: string };
+	| { type: 'openArticle'; slug: string }
+	| { type: 'openSimilarProblem'; titleSlug: string; title: string; difficulty: string };
 
 /** 扩展 → webview（题面/题解面板） */
 export type ExtensionToPanelMessage =

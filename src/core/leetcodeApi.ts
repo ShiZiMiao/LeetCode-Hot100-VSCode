@@ -13,6 +13,16 @@ export interface Question {
     titleSlug: string;
     difficulty: string;
     status: string | null;
+    /** 通过率（百分数，如 72.5） */
+    acRate?: number;
+    /** 出现频次（1-5） */
+    freqBar?: number;
+    /** 会员题标记 */
+    paidOnly?: boolean;
+    /** 官网收藏状态（isFavor） */
+    isFavor?: boolean;
+    /** 题解数（solutionNum） */
+    solutionNum?: number;
 }
 
 export class LeetCodeApi {
@@ -475,13 +485,18 @@ export class LeetCodeApi {
             questions.push(...page);
         }
 
-        // 映射为 Question 接口格式
+        // 映射为 Question 接口格式（列表接口的 isFavor/paidOnly 为布尔，acRate/freqBar 为数字）
         return questions.map((q: any) => ({
             frontendQuestionId: q.frontendQuestionId,
             title: q.titleCn || q.title,  // 优先使用中文标题
             titleSlug: q.titleSlug,
             difficulty: q.difficulty,
-            status: q.status
+            status: q.status,
+            acRate: typeof q.acRate === 'number' ? q.acRate : undefined,
+            freqBar: typeof q.freqBar === 'number' ? q.freqBar : undefined,
+            paidOnly: q.paidOnly === true,
+            isFavor: q.isFavor === true,
+            solutionNum: typeof q.solutionNum === 'number' ? q.solutionNum : undefined
         }));
     }
 
@@ -526,6 +541,97 @@ export class LeetCodeApi {
             }
         `;
         return this.postGraphql(query, { titleSlug });
+    }
+
+    /**
+     * 每日一题（todayRecord，2026-09 起 questionOfToday 接口已失效）。
+     * 返回规范化对象或 null（结构异常/未开放时由调用方提示）。
+     * 注意：每日一题不一定属于 Hot 100，题面/判题流程通用，题解入口同样可用。
+     */
+    async getDailyQuestion(): Promise<{ date: string; frontendQuestionId: string; titleSlug: string; difficulty: string; title: string; translatedTitle: string } | null> {
+        const query = `
+            query questionOfToday {
+                todayRecord {
+                    date
+                    question {
+                        questionFrontendId
+                        questionTitleSlug
+                        title
+                        translatedTitle
+                        difficulty
+                    }
+                }
+            }
+        `;
+        const data = await this.postGraphql(query);
+        const records: any[] = Array.isArray(data?.data?.todayRecord) ? data.data.todayRecord : [];
+        const today = records[0];
+        const q = today?.question;
+        if (!q?.questionTitleSlug) {
+            return null;
+        }
+        return {
+            date: today?.date || '',
+            frontendQuestionId: String(q.questionFrontendId || ''),
+            titleSlug: q.questionTitleSlug,
+            difficulty: q.difficulty || '',
+            title: q.title || '',
+            translatedTitle: q.translatedTitle || ''
+        };
+    }
+
+    /**
+     * 题目提交历史（submissionList GraphQL，按时间倒序）。结构异常/无记录时返回空数组。
+     */
+    async getSubmissions(
+        titleSlug: string,
+        limit: number = 20
+    ): Promise<Array<{ id: string; statusDisplay: string; lang: string; timestamp: number; runtime: string; memory: string; url: string }>> {
+        const query = `
+            query submissionList($offset: Int, $limit: Int, $lastKey: String, $questionSlug: String!) {
+                submissionList(offset: $offset, limit: $limit, lastKey: $lastKey, questionSlug: $questionSlug) {
+                    lastKey
+                    hasNext
+                    submissions {
+                        id
+                        status
+                        statusDisplay
+                        lang
+                        timestamp
+                        runtime
+                        memory
+                        url
+                    }
+                }
+            }
+        `;
+        const data = await this.postGraphql(query, { questionSlug: titleSlug, offset: 0, limit });
+        const subs = data?.data?.submissionList?.submissions;
+        if (!Array.isArray(subs)) {
+            return [];
+        }
+        return subs
+            .filter((s: any) => s && s.id)
+            .map((s: any) => {
+                // submissionList 的 url 可能为相对路径（如 /submissions/{id}/），
+                // openExternal 需要绝对 https 地址，缺失/相对时拼接补全
+                let url = typeof s.url === 'string' ? s.url.trim() : '';
+                if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                    url = 'https://leetcode.cn' + (url.startsWith('/') ? url : `/${url}`);
+                }
+                if (url === 'https://leetcode.cn') {
+                    url = `https://leetcode.cn/problems/${titleSlug}/submissions/${s.id}/`;
+                }
+                return {
+                    id: String(s.id),
+                    statusDisplay: s.statusDisplay || s.status || '',
+                    lang: s.lang || '',
+                    timestamp: Number(s.timestamp) || 0,
+                    runtime: s.runtime || '',
+                    memory: s.memory || '',
+                    url
+                };
+            });
     }
 
     async submitCode(titleSlug: string, questionId: string, lang: string, typedCode: string): Promise<any> {

@@ -1,19 +1,42 @@
 /**
  * Hot 100 题目列表 Provider
- * 实现按分类的树形结构显示；顶层含总进度与错题回顾入口，
+ * 实现按分类（官网默认）或按难度（简单/中等/困难）的树形结构显示；顶层含总进度与错题回顾入口，
  * 支持状态筛选（未做/已解决/尝试过）与判题结果实时更新（本地状态 + 错题队列）
  */
 
 import * as vscode from 'vscode';
 import { LeetCodeApi, Question } from '../core/leetcodeApi';
-import { HOT_100_LIST, CATEGORIES, Hot100Question, HOT_100_IDS, ID_TO_SLUG } from '../data/hot100Data';
+import { HOT_100_LIST, CATEGORIES, Hot100Question, HOT_100_IDS, ID_TO_SLUG, categoryLabel } from '../data/hot100Data';
 import { computeProgressStats, progressPercent, matchesStatusFilter, ProgressStats, StatusFilter, STATUS_FILTER_LABELS, QuestionStatus } from '../utils/progressStats';
-import { WrongEntry, addWrongEntry, removeWrongEntry, formatFailedAt } from '../utils/wrongQueue';
+import { WrongEntry, addWrongEntry, removeWrongEntry, formatFailedAt, failureCountOf, nextReviewAt, isReviewDue, sortWrongByReview } from '../utils/wrongQueue';
+import { DifficultyLevel, DIFFICULTY_LABELS, DIFFICULTY_ZH, buildDifficultyGroups, isDifficultyLevel } from '../utils/difficultyGroups';
+import { computeStudyStats, localDateStr, StudyStats } from '../utils/studyStats';
+import { GroupByMode, orderedQuestions } from '../utils/questionOrder';
+import { formatAcRate } from '../utils/metaFormat';
+
+export type { GroupByMode } from '../utils/questionOrder';
 
 // 树形节点类型
-type TreeNode = CategoryItem | QuestionItem | ProgressItem | WrongCategoryItem;
+type TreeNode = CategoryItem | QuestionItem | ProgressItem | WrongCategoryItem | DifficultyItem | StatsItem | StatsRowItem;
 
 const WRONG_STORE_KEY = 'hot100WrongQueue';
+const GROUP_BY_STORE_KEY = 'hot100GroupBy';
+const SOLVED_DATES_KEY = 'hot100SolvedDates';
+const FAVORITES_KEY = 'hot100Favorites';
+
+/** 列表接口下发的题目元数据（展示用；仅保留实际消费的字段） */
+export interface QuestionMeta {
+    paidOnly: boolean;
+    acRate?: number;
+}
+
+// 每日目标默认值（可在设置 leetcode.dailyGoal 中修改）
+const DEFAULT_DAILY_GOAL = 3;
+
+function dailyGoal(): number {
+    const v = vscode.workspace.getConfiguration('leetcode').get<number>('dailyGoal', DEFAULT_DAILY_GOAL);
+    return Number.isInteger(v) && v > 0 ? v : DEFAULT_DAILY_GOAL;
+}
 
 // frontendQuestionId → titleSlug 反向映射（用于判题结果按 slug 更新本地状态）
 const SLUG_TO_ID: Map<string, string> = new Map(
@@ -39,7 +62,14 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
     private questionDifficultyMap: Map<string, string> = new Map();
     private isLoaded: boolean = false;
     private filter: StatusFilter = 'all';
+    private groupBy: GroupByMode = 'category';
     private wrongList: WrongEntry[] = [];
+    // 提交通过的日期集合（YYYY-MM-DD，本地时区；仅记扩展内通过，用于连续打卡/每日目标）
+    private solvedDates: Set<string> = new Set();
+    // 本地收藏（与官网收藏独立，离线可用；toggleFavorite 维护）
+    private favoriteIds: Set<string> = new Set();
+    // 列表接口元数据（会员题/通过率/频次/题解数，API 加载后填充）
+    private questionMetaMap: Map<string, QuestionMeta> = new Map();
 
     constructor(leetCodeApi: LeetCodeApi, store?: vscode.Memento) {
         this.leetCodeApi = leetCodeApi;
@@ -48,18 +78,63 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
         if (Array.isArray(cached)) {
             this.wrongList = cached;
         }
+        const cachedDates = store?.get<string[]>(SOLVED_DATES_KEY, []);
+        if (Array.isArray(cachedDates)) {
+            this.solvedDates = new Set(cachedDates.filter(d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)));
+        }
+        const cachedFavs = store?.get<string[]>(FAVORITES_KEY, []);
+        if (Array.isArray(cachedFavs)) {
+            this.favoriteIds = new Set(cachedFavs.filter(id => typeof id === 'string'));
+        }
+        const savedGroupBy = store?.get<string>(GROUP_BY_STORE_KEY, 'category');
+        this.groupBy = savedGroupBy === 'difficulty' ? 'difficulty' : 'category';
+    }
+
+    /** 当前分组方式（命令面板标题里展示用） */
+    get currentGroupBy(): GroupByMode {
+        return this.groupBy;
+    }
+
+    /** 切换分组方式（按分类/按难度）并刷新树，选择持久化 */
+    setGroupBy(mode: GroupByMode): void {
+        this.groupBy = mode;
+        this.store?.update(GROUP_BY_STORE_KEY, mode);
+        this._onDidChangeTreeData.fire();
+    }
+
+    /** 收藏状态（本地收藏，独立于官网 isFavor） */
+    isFavorite(frontendQuestionId: string): boolean {
+        return this.favoriteIds.has(frontendQuestionId);
+    }
+
+    /** 切换收藏并持久化，返回切换后的状态 */
+    toggleFavorite(frontendQuestionId: string): boolean {
+        if (this.favoriteIds.has(frontendQuestionId)) {
+            this.favoriteIds.delete(frontendQuestionId);
+        } else {
+            this.favoriteIds.add(frontendQuestionId);
+        }
+        this.store?.update(FAVORITES_KEY, [...this.favoriteIds]);
+        this._onDidChangeTreeData.fire();
+        return this.favoriteIds.has(frontendQuestionId);
     }
 
     refresh(): void {
         this.isLoaded = false;
         this.questionStatusMap.clear();
         this.questionDifficultyMap.clear();
+        this.questionMetaMap.clear();
         this._onDidChangeTreeData.fire();
     }
 
     /** 设置状态筛选并刷新树 */
     setStatusFilter(filter: StatusFilter): void {
         this.filter = filter;
+        this._onDidChangeTreeData.fire();
+    }
+
+    /** 仅重绘当前树（外部配置变化等场景，不重拉 API 状态） */
+    rerender(): void {
         this._onDidChangeTreeData.fire();
     }
 
@@ -86,7 +161,12 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
 				: addWrongEntry(this.wrongList, entry);
 			this.store?.update(WRONG_STORE_KEY, this.wrongList);
 		}
-		if (id || this.wrongList.length > 0) {
+		// 提交通过当日打卡：连续打卡/每日目标进度依赖此集合
+		if (opts.solved) {
+			this.solvedDates.add(localDateStr());
+			this.store?.update(SOLVED_DATES_KEY, [...this.solvedDates]);
+		}
+		if (id || this.wrongList.length > 0 || opts.solved) {
 			this._onDidChangeTreeData.fire();
 		}
 	}
@@ -109,14 +189,25 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
             this.isLoaded = true;
         }
 
-        // 顶层：进度 + 错题回顾 + 分类
+        // 顶层：进度 + 刷题统计 + 错题回顾 + 分类（或难度分组）
         if (!element) {
             const totalStats = computeProgressStats(
                 HOT_100_LIST.map(q => statusOf(this.questionStatusMap.get(q.frontendQuestionId)))
             );
-            const nodes: TreeNode[] = [new ProgressItem(totalStats, this.filter)];
+            const nodes: TreeNode[] = [new ProgressItem(totalStats, this.filter), new StatsItem()];
             if (this.wrongList.length > 0) {
                 nodes.push(new WrongCategoryItem(this.wrongList.length));
+            }
+            if (this.groupBy === 'difficulty') {
+                // 按难度：简单 → 中等 → 困难，组内按题号升序；筛选后无匹配题目时隐藏分组
+                for (const group of this.difficultyGroups()) {
+                    if (group.questions.length === 0) {
+                        continue;
+                    }
+                    const stats = computeProgressStats(group.questions.map(q => statusOf(this.questionStatusMap.get(q.frontendQuestionId))));
+                    nodes.push(new DifficultyItem(group.level, group.questions.length, stats.solved));
+                }
+                return nodes;
             }
             for (const [index, category] of CATEGORIES.entries()) {
                 const categoryQuestions = HOT_100_LIST.filter(
@@ -132,9 +223,20 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
             return nodes;
         }
 
-        // 错题回顾：显示失败记录（最新在前）
+        // 错题回顾：显示失败记录（按复习到期排序，到期的排最前）
         if (element instanceof WrongCategoryItem) {
-            return this.wrongList.map(w => new WrongItem(w, SLUG_TO_ID.get(w.titleSlug) || ''));
+            return sortWrongByReview(this.wrongList).map(w => new WrongItem(w, SLUG_TO_ID.get(w.titleSlug) || ''));
+        }
+
+        // 刷题统计：总进度 + 难度/分类分布 + 连续打卡 + 今日目标
+        if (element instanceof StatsItem) {
+            return this.buildStatsRows();
+        }
+
+        // 难度分组下面：显示该难度内按题号升序的题目
+        if (element instanceof DifficultyItem) {
+            const group = this.difficultyGroups().find(g => g.level === element.level);
+            return group ? group.questions.map(q => this.toQuestionItem(q)) : [];
         }
 
         // 分类下面：显示该分类的题目
@@ -142,14 +244,104 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
             const categoryQuestions = HOT_100_LIST.filter(
                 q => q.category === element.category && matchesStatusFilter(statusOf(this.questionStatusMap.get(q.frontendQuestionId)), this.filter)
             );
-            return categoryQuestions.map(q => {
-                const status = statusOf(this.questionStatusMap.get(q.frontendQuestionId));
-                const difficulty = this.questionDifficultyMap.get(q.frontendQuestionId) || '';
-                return new QuestionItem(q, status, difficulty);
-            });
+            return categoryQuestions.map(q => this.toQuestionItem(q));
         }
 
         return [];
+    }
+
+    /**
+     * 题目难度：优先列表 API 实时值（与题目标签展示一致），API 缺失时回退静态数据，
+     * 保证离线/接口失败时按难度分组与标签仍可用。
+     */
+    private difficultyOf(q: Hot100Question): DifficultyLevel | undefined {
+        const api = this.questionDifficultyMap.get(q.frontendQuestionId);
+        if (isDifficultyLevel(api)) {
+            return api;
+        }
+        return isDifficultyLevel(q.difficulty) ? q.difficulty : undefined;
+    }
+
+    /**
+     * 按难度构建分组（简单 → 中等 → 困难，组内题号升序，已套用状态筛选）。
+     * 顶层与展开子节点共用，避免两处分组逻辑漂移。
+     */
+    private difficultyGroups(): Array<{ level: DifficultyLevel; questions: Hot100Question[] }> {
+        return buildDifficultyGroups(
+            HOT_100_LIST,
+            q => this.difficultyOf(q),
+            q => statusOf(this.questionStatusMap.get(q.frontendQuestionId)),
+            this.filter
+        );
+    }
+
+    private toQuestionItem(q: Hot100Question): QuestionItem {
+        const status = statusOf(this.questionStatusMap.get(q.frontendQuestionId));
+        const difficulty = this.difficultyOf(q) || '';
+        // 难度分组下组头已标明难度，题目标签改显示所属分类（如「[1 · 哈希]」），避免信息重复
+        const labelTag = this.groupBy === 'difficulty' ? categoryLabel(q.category) : undefined;
+        return new QuestionItem(q, status, difficulty, labelTag, {
+            ...(this.questionMetaMap.get(q.frontendQuestionId) || { paidOnly: false }),
+            isFavorite: this.isFavorite(q.frontendQuestionId)
+        });
+    }
+
+    /** 当前分组方式的题目顺序（不含状态筛选，供"下一题"命令用） */
+    ordered(): Hot100Question[] {
+        return orderedQuestions(HOT_100_LIST, this.groupBy);
+    }
+
+    /** 全量题目 + 状态/难度/元数据（搜索与随机抽题的候选池） */
+    allWithMeta(): Array<{ q: Hot100Question; status: QuestionStatus; difficulty: DifficultyLevel | undefined; paidOnly: boolean; isFavorite: boolean }> {
+        return HOT_100_LIST.map(q => ({
+            q,
+            status: statusOf(this.questionStatusMap.get(q.frontendQuestionId)),
+            difficulty: this.difficultyOf(q),
+            paidOnly: this.questionMetaMap.get(q.frontendQuestionId)?.paidOnly ?? false,
+            isFavorite: this.isFavorite(q.frontendQuestionId)
+        }));
+    }
+
+    /** 当前错题回顾队列（随机错题用） */
+    currentWrongList(): WrongEntry[] {
+        return this.wrongList;
+    }
+
+    /** 刷题统计子节点：总进度 / 难度 / 分类 / 连续打卡 / 今日目标 */
+    private buildStatsRows(): StatsRowItem[] {
+        const stats: StudyStats = computeStudyStats(
+            HOT_100_LIST,
+            q => statusOf(this.questionStatusMap.get(q.frontendQuestionId)),
+            [...this.solvedDates]
+        );
+        const rows: StatsRowItem[] = [
+            new StatsRowItem(`总进度：${stats.total.solved} / ${stats.total.total}（${progressPercent(stats.total)}%）`, new vscode.ThemeIcon('graph'), undefined, 'statsRow')
+        ];
+        for (const row of stats.difficultyRows) {
+            rows.push(new StatsRowItem(
+                `${DIFFICULTY_ZH[row.level]}：${row.solved} / ${row.total}`,
+                difficultyIcon(row.level),
+                undefined,
+                'statsRow'
+            ));
+        }
+        for (const row of stats.categoryRows) {
+            rows.push(new StatsRowItem(`${categoryLabel(row.category)}：${row.solved} / ${row.total}`, new vscode.ThemeIcon('folder'), undefined, 'statsRow'));
+        }
+        rows.push(new StatsRowItem(
+            `连续打卡：${stats.streakDays} 天`,
+            new vscode.ThemeIcon('flame', new vscode.ThemeColor('charts.orange')),
+            stats.todaySolved > 0 ? `今日已通过 ${stats.todaySolved} 题` : undefined,
+            'statsRow'
+        ));
+        const goal = dailyGoal();
+        rows.push(new StatsRowItem(
+            `今日目标：${Math.min(stats.todaySolved, goal)} / ${goal}`,
+            new vscode.ThemeIcon('target'),
+            '点击修改每日目标',
+            'statsGoal'
+        ));
+        return rows;
     }
 
     /**
@@ -173,12 +365,26 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
                     if (q.difficulty) {
                         this.questionDifficultyMap.set(q.frontendQuestionId, q.difficulty);
                     }
+                    this.questionMetaMap.set(q.frontendQuestionId, {
+                        paidOnly: q.paidOnly === true,
+                        acRate: q.acRate
+                    });
                 }
             }
         } catch (error) {
             vscode.window.showErrorMessage(`加载题目状态失败: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
+}
+
+/**
+ * 难度彩色圆点图标（绿/黄/红，与官网难度色一致；分组头与统计行共用）
+ */
+function difficultyIcon(level: DifficultyLevel): vscode.ThemeIcon {
+    return new vscode.ThemeIcon(
+        'circle-filled',
+        new vscode.ThemeColor(level === 'EASY' ? 'charts.green' : level === 'MEDIUM' ? 'charts.yellow' : 'charts.red')
+    );
 }
 
 /**
@@ -201,22 +407,25 @@ export class ProgressItem extends vscode.TreeItem {
 export class WrongCategoryItem extends vscode.TreeItem {
     constructor(count: number) {
         super(`❌ 错题回顾（${count}）`, vscode.TreeItemCollapsibleState.Collapsed);
-        this.tooltip = '提交失败的题目，按失败时间倒序；提交通过后自动移出';
+        this.tooltip = '提交失败的题目，按复习到期排序（到期的排最前）；提交通过后自动移出';
         this.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('testing.iconFailed'));
         this.contextValue = 'wrongCategory';
     }
 }
 
 /**
- * 错题回顾条目
+ * 错题回顾条目：显示失败次数、最近失败时间与原因（按复习到期排序后展示）
  */
 export class WrongItem extends vscode.TreeItem {
     constructor(entry: WrongEntry, frontendQuestionId: string) {
         const idPrefix = frontendQuestionId ? `[${frontendQuestionId}] ` : '';
         super(`❌ ${idPrefix}${entry.title}`, vscode.TreeItemCollapsibleState.None);
         const ts = formatFailedAt(entry.failedAt);
-        this.description = `${ts} · ${entry.reason}`;
-        this.tooltip = `${entry.titleSlug}\n失败：${ts} · ${entry.reason}\n点击重新打开题目`;
+        const due = formatFailedAt(nextReviewAt(entry));
+        const dueText = isReviewDue(entry) ? `已到期复习（下次 ${due}）` : `复习排期：${due}`;
+        const failMsg = `失败 ${failureCountOf(entry)} 次`;
+        this.description = `${failMsg} · ${ts} · ${entry.reason}`;
+        this.tooltip = `${entry.titleSlug}\n${failMsg}，${dueText}\n失败时间：${ts} · ${entry.reason}\n点击重新打开题目`;
         this.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('testing.iconFailed'));
         const q = HOT_100_LIST.find(x => x.titleSlug === entry.titleSlug);
         if (q) {
@@ -256,21 +465,81 @@ export class CategoryItem extends vscode.TreeItem {
 }
 
 /**
+ * 难度分组节点（简单/中等/困难），展开后组内按题号升序
+ */
+export class DifficultyItem extends vscode.TreeItem {
+    constructor(
+        public readonly level: DifficultyLevel,
+        public readonly questionCount: number,
+        public readonly solvedCount: number
+    ) {
+        super(DIFFICULTY_LABELS[level], vscode.TreeItemCollapsibleState.Collapsed);
+
+        this.tooltip = `${DIFFICULTY_LABELS[level]} - 共 ${questionCount} 题，已解决 ${solvedCount}`;
+        this.description = `已解 ${solvedCount} / ${questionCount}`;
+        this.iconPath = difficultyIcon(level);
+        this.contextValue = 'difficulty';
+    }
+}
+
+/**
+ * 刷题统计分组节点（展开显示总进度/难度/分类分布、连续打卡、今日目标）
+ */
+export class StatsItem extends vscode.TreeItem {
+    constructor() {
+        super('📈 刷题统计', vscode.TreeItemCollapsibleState.Collapsed);
+        this.tooltip = '总进度、难度/分类分布、连续打卡天数与每日目标';
+        this.iconPath = new vscode.ThemeIcon('graph-line');
+        this.contextValue = 'stats';
+    }
+}
+
+/**
+ * 刷题统计子行（只读展示；contextValue 为 statsGoal 的行可点击设置每日目标）
+ */
+export class StatsRowItem extends vscode.TreeItem {
+    constructor(
+        label: string,
+        icon: vscode.ThemeIcon,
+        description?: string,
+        contextValue: string = 'statsRow'
+    ) {
+        super(label, vscode.TreeItemCollapsibleState.None);
+        this.iconPath = icon;
+        // 内容已全部行内可见，关闭默认"悬浮=标签文本"提示
+        this.tooltip = '';
+        if (description !== undefined) {
+            this.description = description;
+        }
+        this.contextValue = contextValue;
+        if (contextValue === 'statsGoal') {
+            this.command = { command: 'leetcode.setDailyGoal', title: '设置每日目标' };
+        }
+    }
+}
+
+/**
  * 题目节点
  */
 export class QuestionItem extends vscode.TreeItem {
     public readonly question: Question;
+    public readonly meta: QuestionMeta & { isFavorite?: boolean };
 
     constructor(
         hot100Question: Hot100Question,
         status: QuestionStatus,
-        difficulty: string = ''
+        difficulty: string = '',
+        labelTag?: string,  // 题号标签文本：难度模式下传所属分类（如「哈希」），缺省显示难度
+        meta: QuestionMeta & { isFavorite?: boolean } = { paidOnly: false }
     ) {
         // 列表接口返回大写难度枚举（EASY/MEDIUM/HARD），与详情接口区分大小写不同
-        const difficultyZh = difficulty === 'EASY' ? '简单' : difficulty === 'MEDIUM' ? '中等' : difficulty === 'HARD' ? '困难' : '';
-        // 难度与题号一起放在中括号里，如 [1 · 简单]
-        const label = `[${hot100Question.frontendQuestionId}${difficultyZh ? ' · ' + difficultyZh : ''}] ${hot100Question.titleCn}`;
+        const difficultyZh = isDifficultyLevel(difficulty) ? DIFFICULTY_ZH[difficulty] : '';
+        // 难度与题号一起放在中括号里，如 [1 · 简单]；标签缺省时显式传空串表示不显示
+        const tag = labelTag !== undefined ? labelTag : difficultyZh;
+        const marks = `${meta.paidOnly ? '🔒' : ''}${meta.isFavorite ? '⭐' : ''}`;
+        const label = `${marks}[${hot100Question.frontendQuestionId}${tag ? ' · ' + tag : ''}] ${hot100Question.titleCn}`;
         super(label, vscode.TreeItemCollapsibleState.None);
+        this.meta = meta;
 
         // 构建Question对象
         this.question = {
@@ -281,8 +550,11 @@ export class QuestionItem extends vscode.TreeItem {
             status: status
         };
 
-        this.tooltip = `${hot100Question.titleEn} - ${hot100Question.titleCn}`;
-        this.description = hot100Question.titleEn;
+        const acRateText = formatAcRate(meta.acRate);
+        // 难度/通过率/会员/收藏均已行内可见（标签标记 + 描述列），不再重复悬浮窗；
+        // 空串显式关闭 VS Code 默认的"悬浮=标签文本"提示
+        this.tooltip = '';
+        this.description = `${hot100Question.titleEn}${acRateText ? ` · ${acRateText}` : ''}`;
 
         // 状态图标
         if (status === 'ac') {

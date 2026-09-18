@@ -6,6 +6,7 @@
 export interface Hot100Question {
     category: string;           // 分类（中英文）
     frontendQuestionId: string; // 题目序号
+    difficulty: string;         // 难度（EASY/MEDIUM/HARD，与列表 API 枚举一致）
     titleSlug: string;          // 题目slug（用于API查询）
     titleCn: string;            // 中文标题
     titleEn: string;            // 英文标题
@@ -152,139 +153,146 @@ export const ID_TO_SLUG: Map<string, string> = new Map([
 // 完整的 Hot 100 题目列表（按分类组织）
 export const HOT_100_LIST: Hot100Question[] = [
     // 哈希 (Hash)
-    { category: "哈希 (Hash)", frontendQuestionId: "1", titleSlug: "two-sum", titleEn: "Two Sum", titleCn: "两数之和" },
-    { category: "哈希 (Hash)", frontendQuestionId: "49", titleSlug: "group-anagrams", titleEn: "Group Anagrams", titleCn: "字母异位词分组" },
-    { category: "哈希 (Hash)", frontendQuestionId: "128", titleSlug: "longest-consecutive-sequence", titleEn: "Longest Consecutive Sequence", titleCn: "最长连续序列" },
+    { category: "哈希 (Hash)", frontendQuestionId: "1", difficulty: "EASY", titleSlug: "two-sum", titleEn: "Two Sum", titleCn: "两数之和" },
+    { category: "哈希 (Hash)", frontendQuestionId: "49", difficulty: "MEDIUM", titleSlug: "group-anagrams", titleEn: "Group Anagrams", titleCn: "字母异位词分组" },
+    { category: "哈希 (Hash)", frontendQuestionId: "128", difficulty: "MEDIUM", titleSlug: "longest-consecutive-sequence", titleEn: "Longest Consecutive Sequence", titleCn: "最长连续序列" },
 
     // 双指针 (Two Pointers)
-    { category: "双指针 (Two Pointers)", frontendQuestionId: "283", titleSlug: "move-zeroes", titleEn: "Move Zeroes", titleCn: "移动零" },
-    { category: "双指针 (Two Pointers)", frontendQuestionId: "11", titleSlug: "container-with-most-water", titleEn: "Container With Most Water", titleCn: "盛最多水的容器" },
-    { category: "双指针 (Two Pointers)", frontendQuestionId: "15", titleSlug: "3sum", titleEn: "3Sum", titleCn: "三数之和" },
-    { category: "双指针 (Two Pointers)", frontendQuestionId: "42", titleSlug: "trapping-rain-water", titleEn: "Trapping Rain Water", titleCn: "接雨水" },
+    { category: "双指针 (Two Pointers)", frontendQuestionId: "283", difficulty: "EASY", titleSlug: "move-zeroes", titleEn: "Move Zeroes", titleCn: "移动零" },
+    { category: "双指针 (Two Pointers)", frontendQuestionId: "11", difficulty: "MEDIUM", titleSlug: "container-with-most-water", titleEn: "Container With Most Water", titleCn: "盛最多水的容器" },
+    { category: "双指针 (Two Pointers)", frontendQuestionId: "15", difficulty: "MEDIUM", titleSlug: "3sum", titleEn: "3Sum", titleCn: "三数之和" },
+    { category: "双指针 (Two Pointers)", frontendQuestionId: "42", difficulty: "HARD", titleSlug: "trapping-rain-water", titleEn: "Trapping Rain Water", titleCn: "接雨水" },
 
     // 滑动窗口 (Sliding Window)
-    { category: "滑动窗口 (Sliding Window)", frontendQuestionId: "3", titleSlug: "longest-substring-without-repeating-characters", titleEn: "Longest Substring Without Repeating Characters", titleCn: "无重复字符的最长子串" },
-    { category: "滑动窗口 (Sliding Window)", frontendQuestionId: "438", titleSlug: "find-all-anagrams-in-a-string", titleEn: "Find All Anagrams in a String", titleCn: "找到字符串中所有字母异位词" },
+    { category: "滑动窗口 (Sliding Window)", frontendQuestionId: "3", difficulty: "MEDIUM", titleSlug: "longest-substring-without-repeating-characters", titleEn: "Longest Substring Without Repeating Characters", titleCn: "无重复字符的最长子串" },
+    { category: "滑动窗口 (Sliding Window)", frontendQuestionId: "438", difficulty: "MEDIUM", titleSlug: "find-all-anagrams-in-a-string", titleEn: "Find All Anagrams in a String", titleCn: "找到字符串中所有字母异位词" },
 
     // 子串 (Substrings)
-    { category: "子串 (Substrings)", frontendQuestionId: "560", titleSlug: "subarray-sum-equals-k", titleEn: "Subarray Sum Equals K", titleCn: "和为 K 的子数组" },
-    { category: "子串 (Substrings)", frontendQuestionId: "239", titleSlug: "sliding-window-maximum", titleEn: "Sliding Window Maximum", titleCn: "滑动窗口最大值" },
-    { category: "子串 (Substrings)", frontendQuestionId: "76", titleSlug: "minimum-window-substring", titleEn: "Minimum Window Substring", titleCn: "最小覆盖子串" },
+    { category: "子串 (Substrings)", frontendQuestionId: "560", difficulty: "MEDIUM", titleSlug: "subarray-sum-equals-k", titleEn: "Subarray Sum Equals K", titleCn: "和为 K 的子数组" },
+    { category: "子串 (Substrings)", frontendQuestionId: "239", difficulty: "HARD", titleSlug: "sliding-window-maximum", titleEn: "Sliding Window Maximum", titleCn: "滑动窗口最大值" },
+    { category: "子串 (Substrings)", frontendQuestionId: "76", difficulty: "HARD", titleSlug: "minimum-window-substring", titleEn: "Minimum Window Substring", titleCn: "最小覆盖子串" },
 
     // 数组 (Array)
-    { category: "数组 (Array)", frontendQuestionId: "53", titleSlug: "maximum-subarray", titleEn: "Maximum Subarray", titleCn: "最大子数组和" },
-    { category: "数组 (Array)", frontendQuestionId: "56", titleSlug: "merge-intervals", titleEn: "Merge Intervals", titleCn: "合并区间" },
-    { category: "数组 (Array)", frontendQuestionId: "189", titleSlug: "rotate-array", titleEn: "Rotate Array", titleCn: "轮转数组" },
-    { category: "数组 (Array)", frontendQuestionId: "238", titleSlug: "product-of-array-except-self", titleEn: "Product of Array Except Self", titleCn: "除自身以外数组的乘积" },
-    { category: "数组 (Array)", frontendQuestionId: "41", titleSlug: "first-missing-positive", titleEn: "First Missing Positive", titleCn: "缺失的第一个正数" },
+    { category: "数组 (Array)", frontendQuestionId: "53", difficulty: "MEDIUM", titleSlug: "maximum-subarray", titleEn: "Maximum Subarray", titleCn: "最大子数组和" },
+    { category: "数组 (Array)", frontendQuestionId: "56", difficulty: "MEDIUM", titleSlug: "merge-intervals", titleEn: "Merge Intervals", titleCn: "合并区间" },
+    { category: "数组 (Array)", frontendQuestionId: "189", difficulty: "MEDIUM", titleSlug: "rotate-array", titleEn: "Rotate Array", titleCn: "轮转数组" },
+    { category: "数组 (Array)", frontendQuestionId: "238", difficulty: "MEDIUM", titleSlug: "product-of-array-except-self", titleEn: "Product of Array Except Self", titleCn: "除自身以外数组的乘积" },
+    { category: "数组 (Array)", frontendQuestionId: "41", difficulty: "HARD", titleSlug: "first-missing-positive", titleEn: "First Missing Positive", titleCn: "缺失的第一个正数" },
 
     // 矩阵 (Matrix)
-    { category: "矩阵 (Matrix)", frontendQuestionId: "73", titleSlug: "set-matrix-zeroes", titleEn: "Set Matrix Zeroes", titleCn: "矩阵置零" },
-    { category: "矩阵 (Matrix)", frontendQuestionId: "54", titleSlug: "spiral-matrix", titleEn: "Spiral Matrix", titleCn: "螺旋矩阵" },
-    { category: "矩阵 (Matrix)", frontendQuestionId: "48", titleSlug: "rotate-image", titleEn: "Rotate Image", titleCn: "旋转图像" },
-    { category: "矩阵 (Matrix)", frontendQuestionId: "240", titleSlug: "search-a-2d-matrix-ii", titleEn: "Search a 2D Matrix II", titleCn: "搜索二维矩阵 II" },
+    { category: "矩阵 (Matrix)", frontendQuestionId: "73", difficulty: "MEDIUM", titleSlug: "set-matrix-zeroes", titleEn: "Set Matrix Zeroes", titleCn: "矩阵置零" },
+    { category: "矩阵 (Matrix)", frontendQuestionId: "54", difficulty: "MEDIUM", titleSlug: "spiral-matrix", titleEn: "Spiral Matrix", titleCn: "螺旋矩阵" },
+    { category: "矩阵 (Matrix)", frontendQuestionId: "48", difficulty: "MEDIUM", titleSlug: "rotate-image", titleEn: "Rotate Image", titleCn: "旋转图像" },
+    { category: "矩阵 (Matrix)", frontendQuestionId: "240", difficulty: "MEDIUM", titleSlug: "search-a-2d-matrix-ii", titleEn: "Search a 2D Matrix II", titleCn: "搜索二维矩阵 II" },
 
     // 链表 (Linked List)
-    { category: "链表 (Linked List)", frontendQuestionId: "160", titleSlug: "intersection-of-two-linked-lists", titleEn: "Intersection of Two Linked Lists", titleCn: "相交链表" },
-    { category: "链表 (Linked List)", frontendQuestionId: "206", titleSlug: "reverse-linked-list", titleEn: "Reverse Linked List", titleCn: "反转链表" },
-    { category: "链表 (Linked List)", frontendQuestionId: "234", titleSlug: "palindrome-linked-list", titleEn: "Palindrome Linked List", titleCn: "回文链表" },
-    { category: "链表 (Linked List)", frontendQuestionId: "141", titleSlug: "linked-list-cycle", titleEn: "Linked List Cycle", titleCn: "环形链表" },
-    { category: "链表 (Linked List)", frontendQuestionId: "142", titleSlug: "linked-list-cycle-ii", titleEn: "Linked List Cycle II", titleCn: "环形链表 II" },
-    { category: "链表 (Linked List)", frontendQuestionId: "21", titleSlug: "merge-two-sorted-lists", titleEn: "Merge Two Sorted Lists", titleCn: "合并两个有序链表" },
-    { category: "链表 (Linked List)", frontendQuestionId: "2", titleSlug: "add-two-numbers", titleEn: "Add Two Numbers", titleCn: "两数相加" },
-    { category: "链表 (Linked List)", frontendQuestionId: "19", titleSlug: "remove-nth-node-from-end-of-list", titleEn: "Remove Nth Node From End of List", titleCn: "删除链表的倒数第 N 个结点" },
-    { category: "链表 (Linked List)", frontendQuestionId: "24", titleSlug: "swap-nodes-in-pairs", titleEn: "Swap Nodes in Pairs", titleCn: "两两交换链表中的节点" },
-    { category: "链表 (Linked List)", frontendQuestionId: "25", titleSlug: "reverse-nodes-in-k-group", titleEn: "Reverse Nodes in k-Group", titleCn: "K 个一组翻转链表" },
-    { category: "链表 (Linked List)", frontendQuestionId: "138", titleSlug: "copy-list-with-random-pointer", titleEn: "Copy List with Random Pointer", titleCn: "随机链表的复制" },
-    { category: "链表 (Linked List)", frontendQuestionId: "148", titleSlug: "sort-list", titleEn: "Sort List", titleCn: "排序链表" },
-    { category: "链表 (Linked List)", frontendQuestionId: "23", titleSlug: "merge-k-sorted-lists", titleEn: "Merge k Sorted Lists", titleCn: "合并 K 个升序链表" },
-    { category: "链表 (Linked List)", frontendQuestionId: "146", titleSlug: "lru-cache", titleEn: "LRU Cache", titleCn: "LRU 缓存" },
+    { category: "链表 (Linked List)", frontendQuestionId: "160", difficulty: "EASY", titleSlug: "intersection-of-two-linked-lists", titleEn: "Intersection of Two Linked Lists", titleCn: "相交链表" },
+    { category: "链表 (Linked List)", frontendQuestionId: "206", difficulty: "EASY", titleSlug: "reverse-linked-list", titleEn: "Reverse Linked List", titleCn: "反转链表" },
+    { category: "链表 (Linked List)", frontendQuestionId: "234", difficulty: "EASY", titleSlug: "palindrome-linked-list", titleEn: "Palindrome Linked List", titleCn: "回文链表" },
+    { category: "链表 (Linked List)", frontendQuestionId: "141", difficulty: "EASY", titleSlug: "linked-list-cycle", titleEn: "Linked List Cycle", titleCn: "环形链表" },
+    { category: "链表 (Linked List)", frontendQuestionId: "142", difficulty: "MEDIUM", titleSlug: "linked-list-cycle-ii", titleEn: "Linked List Cycle II", titleCn: "环形链表 II" },
+    { category: "链表 (Linked List)", frontendQuestionId: "21", difficulty: "EASY", titleSlug: "merge-two-sorted-lists", titleEn: "Merge Two Sorted Lists", titleCn: "合并两个有序链表" },
+    { category: "链表 (Linked List)", frontendQuestionId: "2", difficulty: "MEDIUM", titleSlug: "add-two-numbers", titleEn: "Add Two Numbers", titleCn: "两数相加" },
+    { category: "链表 (Linked List)", frontendQuestionId: "19", difficulty: "MEDIUM", titleSlug: "remove-nth-node-from-end-of-list", titleEn: "Remove Nth Node From End of List", titleCn: "删除链表的倒数第 N 个结点" },
+    { category: "链表 (Linked List)", frontendQuestionId: "24", difficulty: "MEDIUM", titleSlug: "swap-nodes-in-pairs", titleEn: "Swap Nodes in Pairs", titleCn: "两两交换链表中的节点" },
+    { category: "链表 (Linked List)", frontendQuestionId: "25", difficulty: "HARD", titleSlug: "reverse-nodes-in-k-group", titleEn: "Reverse Nodes in k-Group", titleCn: "K 个一组翻转链表" },
+    { category: "链表 (Linked List)", frontendQuestionId: "138", difficulty: "MEDIUM", titleSlug: "copy-list-with-random-pointer", titleEn: "Copy List with Random Pointer", titleCn: "随机链表的复制" },
+    { category: "链表 (Linked List)", frontendQuestionId: "148", difficulty: "MEDIUM", titleSlug: "sort-list", titleEn: "Sort List", titleCn: "排序链表" },
+    { category: "链表 (Linked List)", frontendQuestionId: "23", difficulty: "HARD", titleSlug: "merge-k-sorted-lists", titleEn: "Merge k Sorted Lists", titleCn: "合并 K 个升序链表" },
+    { category: "链表 (Linked List)", frontendQuestionId: "146", difficulty: "MEDIUM", titleSlug: "lru-cache", titleEn: "LRU Cache", titleCn: "LRU 缓存" },
 
     // 二叉树 (Binary Tree)
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "94", titleSlug: "binary-tree-inorder-traversal", titleEn: "Binary Tree Inorder Traversal", titleCn: "二叉树的中序遍历" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "104", titleSlug: "maximum-depth-of-binary-tree", titleEn: "Maximum Depth of Binary Tree", titleCn: "二叉树的最大深度" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "226", titleSlug: "invert-binary-tree", titleEn: "Invert Binary Tree", titleCn: "翻转二叉树" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "101", titleSlug: "symmetric-tree", titleEn: "Symmetric Tree", titleCn: "对称二叉树" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "543", titleSlug: "diameter-of-binary-tree", titleEn: "Diameter of Binary Tree", titleCn: "二叉树的直径" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "102", titleSlug: "binary-tree-level-order-traversal", titleEn: "Binary Tree Level Order Traversal", titleCn: "二叉树的层序遍历" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "108", titleSlug: "convert-sorted-array-to-binary-search-tree", titleEn: "Convert Sorted Array to Binary Search Tree", titleCn: "将有序数组转换为二叉搜索树" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "98", titleSlug: "validate-binary-search-tree", titleEn: "Validate Binary Search Tree", titleCn: "验证二叉搜索树" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "230", titleSlug: "kth-smallest-element-in-a-bst", titleEn: "Kth Smallest Element in a BST", titleCn: "二叉搜索树中第 K 小的元素" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "199", titleSlug: "binary-tree-right-side-view", titleEn: "Binary Tree Right Side View", titleCn: "二叉树的右视图" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "114", titleSlug: "flatten-binary-tree-to-linked-list", titleEn: "Flatten Binary Tree to Linked List", titleCn: "二叉树展开为链表" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "105", titleSlug: "construct-binary-tree-from-preorder-and-inorder-traversal", titleEn: "Construct Binary Tree from Preorder and Inorder Traversal", titleCn: "从前序与中序遍历序列构造二叉树" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "437", titleSlug: "path-sum-iii", titleEn: "Path Sum III", titleCn: "路径总和 III" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "236", titleSlug: "lowest-common-ancestor-of-a-binary-tree", titleEn: "Lowest Common Ancestor of a Binary Tree", titleCn: "二叉树的最近公共祖先" },
-    { category: "二叉树 (Binary Tree)", frontendQuestionId: "124", titleSlug: "binary-tree-maximum-path-sum", titleEn: "Binary Tree Maximum Path Sum", titleCn: "二叉树中的最大路径和" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "94", difficulty: "EASY", titleSlug: "binary-tree-inorder-traversal", titleEn: "Binary Tree Inorder Traversal", titleCn: "二叉树的中序遍历" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "104", difficulty: "EASY", titleSlug: "maximum-depth-of-binary-tree", titleEn: "Maximum Depth of Binary Tree", titleCn: "二叉树的最大深度" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "226", difficulty: "EASY", titleSlug: "invert-binary-tree", titleEn: "Invert Binary Tree", titleCn: "翻转二叉树" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "101", difficulty: "EASY", titleSlug: "symmetric-tree", titleEn: "Symmetric Tree", titleCn: "对称二叉树" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "543", difficulty: "EASY", titleSlug: "diameter-of-binary-tree", titleEn: "Diameter of Binary Tree", titleCn: "二叉树的直径" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "102", difficulty: "MEDIUM", titleSlug: "binary-tree-level-order-traversal", titleEn: "Binary Tree Level Order Traversal", titleCn: "二叉树的层序遍历" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "108", difficulty: "EASY", titleSlug: "convert-sorted-array-to-binary-search-tree", titleEn: "Convert Sorted Array to Binary Search Tree", titleCn: "将有序数组转换为二叉搜索树" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "98", difficulty: "MEDIUM", titleSlug: "validate-binary-search-tree", titleEn: "Validate Binary Search Tree", titleCn: "验证二叉搜索树" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "230", difficulty: "MEDIUM", titleSlug: "kth-smallest-element-in-a-bst", titleEn: "Kth Smallest Element in a BST", titleCn: "二叉搜索树中第 K 小的元素" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "199", difficulty: "MEDIUM", titleSlug: "binary-tree-right-side-view", titleEn: "Binary Tree Right Side View", titleCn: "二叉树的右视图" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "114", difficulty: "MEDIUM", titleSlug: "flatten-binary-tree-to-linked-list", titleEn: "Flatten Binary Tree to Linked List", titleCn: "二叉树展开为链表" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "105", difficulty: "MEDIUM", titleSlug: "construct-binary-tree-from-preorder-and-inorder-traversal", titleEn: "Construct Binary Tree from Preorder and Inorder Traversal", titleCn: "从前序与中序遍历序列构造二叉树" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "437", difficulty: "MEDIUM", titleSlug: "path-sum-iii", titleEn: "Path Sum III", titleCn: "路径总和 III" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "236", difficulty: "MEDIUM", titleSlug: "lowest-common-ancestor-of-a-binary-tree", titleEn: "Lowest Common Ancestor of a Binary Tree", titleCn: "二叉树的最近公共祖先" },
+    { category: "二叉树 (Binary Tree)", frontendQuestionId: "124", difficulty: "HARD", titleSlug: "binary-tree-maximum-path-sum", titleEn: "Binary Tree Maximum Path Sum", titleCn: "二叉树中的最大路径和" },
 
     // 图论 (Graph)
-    { category: "图论 (Graph)", frontendQuestionId: "200", titleSlug: "number-of-islands", titleEn: "Number of Islands", titleCn: "岛屿数量" },
-    { category: "图论 (Graph)", frontendQuestionId: "994", titleSlug: "rotting-oranges", titleEn: "Rotting Oranges", titleCn: "腐烂的橘子" },
-    { category: "图论 (Graph)", frontendQuestionId: "207", titleSlug: "course-schedule", titleEn: "Course Schedule", titleCn: "课程表" },
-    { category: "图论 (Graph)", frontendQuestionId: "208", titleSlug: "implement-trie-prefix-tree", titleEn: "Implement Trie (Prefix Tree)", titleCn: "实现 Trie (前缀树)" },
+    { category: "图论 (Graph)", frontendQuestionId: "200", difficulty: "MEDIUM", titleSlug: "number-of-islands", titleEn: "Number of Islands", titleCn: "岛屿数量" },
+    { category: "图论 (Graph)", frontendQuestionId: "994", difficulty: "MEDIUM", titleSlug: "rotting-oranges", titleEn: "Rotting Oranges", titleCn: "腐烂的橘子" },
+    { category: "图论 (Graph)", frontendQuestionId: "207", difficulty: "MEDIUM", titleSlug: "course-schedule", titleEn: "Course Schedule", titleCn: "课程表" },
+    { category: "图论 (Graph)", frontendQuestionId: "208", difficulty: "MEDIUM", titleSlug: "implement-trie-prefix-tree", titleEn: "Implement Trie (Prefix Tree)", titleCn: "实现 Trie (前缀树)" },
 
     // 回溯 (Backtracking)
-    { category: "回溯 (Backtracking)", frontendQuestionId: "46", titleSlug: "permutations", titleEn: "Permutations", titleCn: "全排列" },
-    { category: "回溯 (Backtracking)", frontendQuestionId: "78", titleSlug: "subsets", titleEn: "Subsets", titleCn: "子集" },
-    { category: "回溯 (Backtracking)", frontendQuestionId: "17", titleSlug: "letter-combinations-of-a-phone-number", titleEn: "Letter Combinations of a Phone Number", titleCn: "电话号码的字母组合" },
-    { category: "回溯 (Backtracking)", frontendQuestionId: "39", titleSlug: "combination-sum", titleEn: "Combination Sum", titleCn: "组合总和" },
-    { category: "回溯 (Backtracking)", frontendQuestionId: "22", titleSlug: "generate-parentheses", titleEn: "Generate Parentheses", titleCn: "括号生成" },
-    { category: "回溯 (Backtracking)", frontendQuestionId: "79", titleSlug: "word-search", titleEn: "Word Search", titleCn: "单词搜索" },
-    { category: "回溯 (Backtracking)", frontendQuestionId: "131", titleSlug: "palindrome-partitioning", titleEn: "Palindrome Partitioning", titleCn: "分割回文串" },
-    { category: "回溯 (Backtracking)", frontendQuestionId: "51", titleSlug: "n-queens", titleEn: "N-Queens", titleCn: "N 皇后" },
+    { category: "回溯 (Backtracking)", frontendQuestionId: "46", difficulty: "MEDIUM", titleSlug: "permutations", titleEn: "Permutations", titleCn: "全排列" },
+    { category: "回溯 (Backtracking)", frontendQuestionId: "78", difficulty: "MEDIUM", titleSlug: "subsets", titleEn: "Subsets", titleCn: "子集" },
+    { category: "回溯 (Backtracking)", frontendQuestionId: "17", difficulty: "MEDIUM", titleSlug: "letter-combinations-of-a-phone-number", titleEn: "Letter Combinations of a Phone Number", titleCn: "电话号码的字母组合" },
+    { category: "回溯 (Backtracking)", frontendQuestionId: "39", difficulty: "MEDIUM", titleSlug: "combination-sum", titleEn: "Combination Sum", titleCn: "组合总和" },
+    { category: "回溯 (Backtracking)", frontendQuestionId: "22", difficulty: "MEDIUM", titleSlug: "generate-parentheses", titleEn: "Generate Parentheses", titleCn: "括号生成" },
+    { category: "回溯 (Backtracking)", frontendQuestionId: "79", difficulty: "MEDIUM", titleSlug: "word-search", titleEn: "Word Search", titleCn: "单词搜索" },
+    { category: "回溯 (Backtracking)", frontendQuestionId: "131", difficulty: "MEDIUM", titleSlug: "palindrome-partitioning", titleEn: "Palindrome Partitioning", titleCn: "分割回文串" },
+    { category: "回溯 (Backtracking)", frontendQuestionId: "51", difficulty: "HARD", titleSlug: "n-queens", titleEn: "N-Queens", titleCn: "N 皇后" },
 
     // 二分查找 (Binary Search)
-    { category: "二分查找 (Binary Search)", frontendQuestionId: "35", titleSlug: "search-insert-position", titleEn: "Search Insert Position", titleCn: "搜索插入位置" },
-    { category: "二分查找 (Binary Search)", frontendQuestionId: "74", titleSlug: "search-a-2d-matrix", titleEn: "Search a 2D Matrix", titleCn: "搜索二维矩阵" },
-    { category: "二分查找 (Binary Search)", frontendQuestionId: "34", titleSlug: "find-first-and-last-position-of-element-in-sorted-array", titleEn: "Find First and Last Position of Element in Sorted Array", titleCn: "在排序数组中查找元素的第一个和最后一个位置" },
-    { category: "二分查找 (Binary Search)", frontendQuestionId: "33", titleSlug: "search-in-rotated-sorted-array", titleEn: "Search in Rotated Sorted Array", titleCn: "搜索旋转排序数组" },
-    { category: "二分查找 (Binary Search)", frontendQuestionId: "153", titleSlug: "find-minimum-in-rotated-sorted-array", titleEn: "Find Minimum in Rotated Sorted Array", titleCn: "寻找旋转排序数组中的最小值" },
-    { category: "二分查找 (Binary Search)", frontendQuestionId: "4", titleSlug: "median-of-two-sorted-arrays", titleEn: "Median of Two Sorted Arrays", titleCn: "寻找两个正序数组的中位数" },
+    { category: "二分查找 (Binary Search)", frontendQuestionId: "35", difficulty: "EASY", titleSlug: "search-insert-position", titleEn: "Search Insert Position", titleCn: "搜索插入位置" },
+    { category: "二分查找 (Binary Search)", frontendQuestionId: "74", difficulty: "MEDIUM", titleSlug: "search-a-2d-matrix", titleEn: "Search a 2D Matrix", titleCn: "搜索二维矩阵" },
+    { category: "二分查找 (Binary Search)", frontendQuestionId: "34", difficulty: "MEDIUM", titleSlug: "find-first-and-last-position-of-element-in-sorted-array", titleEn: "Find First and Last Position of Element in Sorted Array", titleCn: "在排序数组中查找元素的第一个和最后一个位置" },
+    { category: "二分查找 (Binary Search)", frontendQuestionId: "33", difficulty: "MEDIUM", titleSlug: "search-in-rotated-sorted-array", titleEn: "Search in Rotated Sorted Array", titleCn: "搜索旋转排序数组" },
+    { category: "二分查找 (Binary Search)", frontendQuestionId: "153", difficulty: "MEDIUM", titleSlug: "find-minimum-in-rotated-sorted-array", titleEn: "Find Minimum in Rotated Sorted Array", titleCn: "寻找旋转排序数组中的最小值" },
+    { category: "二分查找 (Binary Search)", frontendQuestionId: "4", difficulty: "HARD", titleSlug: "median-of-two-sorted-arrays", titleEn: "Median of Two Sorted Arrays", titleCn: "寻找两个正序数组的中位数" },
 
     // 栈 (Stack)
-    { category: "栈 (Stack)", frontendQuestionId: "20", titleSlug: "valid-parentheses", titleEn: "Valid Parentheses", titleCn: "有效的括号" },
-    { category: "栈 (Stack)", frontendQuestionId: "155", titleSlug: "min-stack", titleEn: "Min Stack", titleCn: "最小栈" },
-    { category: "栈 (Stack)", frontendQuestionId: "394", titleSlug: "decode-string", titleEn: "Decode String", titleCn: "字符串解码" },
-    { category: "栈 (Stack)", frontendQuestionId: "739", titleSlug: "daily-temperatures", titleEn: "Daily Temperatures", titleCn: "每日温度" },
-    { category: "栈 (Stack)", frontendQuestionId: "84", titleSlug: "largest-rectangle-in-histogram", titleEn: "Largest Rectangle in Histogram", titleCn: "柱状图中最大的矩形" },
+    { category: "栈 (Stack)", frontendQuestionId: "20", difficulty: "EASY", titleSlug: "valid-parentheses", titleEn: "Valid Parentheses", titleCn: "有效的括号" },
+    { category: "栈 (Stack)", frontendQuestionId: "155", difficulty: "MEDIUM", titleSlug: "min-stack", titleEn: "Min Stack", titleCn: "最小栈" },
+    { category: "栈 (Stack)", frontendQuestionId: "394", difficulty: "MEDIUM", titleSlug: "decode-string", titleEn: "Decode String", titleCn: "字符串解码" },
+    { category: "栈 (Stack)", frontendQuestionId: "739", difficulty: "MEDIUM", titleSlug: "daily-temperatures", titleEn: "Daily Temperatures", titleCn: "每日温度" },
+    { category: "栈 (Stack)", frontendQuestionId: "84", difficulty: "HARD", titleSlug: "largest-rectangle-in-histogram", titleEn: "Largest Rectangle in Histogram", titleCn: "柱状图中最大的矩形" },
 
     // 堆 (Heap)
-    { category: "堆 (Heap)", frontendQuestionId: "215", titleSlug: "kth-largest-element-in-an-array", titleEn: "Kth Largest Element in an Array", titleCn: "数组中的第K个最大元素" },
-    { category: "堆 (Heap)", frontendQuestionId: "347", titleSlug: "top-k-frequent-elements", titleEn: "Top K Frequent Elements", titleCn: "前 K 个高频元素" },
-    { category: "堆 (Heap)", frontendQuestionId: "295", titleSlug: "find-median-from-data-stream", titleEn: "Find Median from Data Stream", titleCn: "数据流的中位数" },
+    { category: "堆 (Heap)", frontendQuestionId: "215", difficulty: "MEDIUM", titleSlug: "kth-largest-element-in-an-array", titleEn: "Kth Largest Element in an Array", titleCn: "数组中的第K个最大元素" },
+    { category: "堆 (Heap)", frontendQuestionId: "347", difficulty: "MEDIUM", titleSlug: "top-k-frequent-elements", titleEn: "Top K Frequent Elements", titleCn: "前 K 个高频元素" },
+    { category: "堆 (Heap)", frontendQuestionId: "295", difficulty: "HARD", titleSlug: "find-median-from-data-stream", titleEn: "Find Median from Data Stream", titleCn: "数据流的中位数" },
 
     // 贪心 (Greedy)
-    { category: "贪心 (Greedy)", frontendQuestionId: "121", titleSlug: "best-time-to-buy-and-sell-stock", titleEn: "Best Time to Buy and Sell Stock", titleCn: "买卖股票的最佳时机" },
-    { category: "贪心 (Greedy)", frontendQuestionId: "55", titleSlug: "jump-game", titleEn: "Jump Game", titleCn: "跳跃游戏" },
-    { category: "贪心 (Greedy)", frontendQuestionId: "45", titleSlug: "jump-game-ii", titleEn: "Jump Game II", titleCn: "跳跃游戏 II" },
-    { category: "贪心 (Greedy)", frontendQuestionId: "763", titleSlug: "partition-labels", titleEn: "Partition Labels", titleCn: "划分字母区间" },
+    { category: "贪心 (Greedy)", frontendQuestionId: "121", difficulty: "EASY", titleSlug: "best-time-to-buy-and-sell-stock", titleEn: "Best Time to Buy and Sell Stock", titleCn: "买卖股票的最佳时机" },
+    { category: "贪心 (Greedy)", frontendQuestionId: "55", difficulty: "MEDIUM", titleSlug: "jump-game", titleEn: "Jump Game", titleCn: "跳跃游戏" },
+    { category: "贪心 (Greedy)", frontendQuestionId: "45", difficulty: "MEDIUM", titleSlug: "jump-game-ii", titleEn: "Jump Game II", titleCn: "跳跃游戏 II" },
+    { category: "贪心 (Greedy)", frontendQuestionId: "763", difficulty: "MEDIUM", titleSlug: "partition-labels", titleEn: "Partition Labels", titleCn: "划分字母区间" },
 
     // 动态规划 (Dynamic Programming)
-    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "70", titleSlug: "climbing-stairs", titleEn: "Climbing Stairs", titleCn: "爬楼梯" },
-    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "118", titleSlug: "pascals-triangle", titleEn: "Pascal's Triangle", titleCn: "杨辉三角" },
-    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "198", titleSlug: "house-robber", titleEn: "House Robber", titleCn: "打家劫舍" },
-    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "279", titleSlug: "perfect-squares", titleEn: "Perfect Squares", titleCn: "完全平方数" },
-    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "322", titleSlug: "coin-change", titleEn: "Coin Change", titleCn: "零钱兑换" },
-    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "139", titleSlug: "word-break", titleEn: "Word Break", titleCn: "单词拆分" },
-    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "300", titleSlug: "longest-increasing-subsequence", titleEn: "Longest Increasing Subsequence", titleCn: "最长递增子序列" },
-    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "152", titleSlug: "maximum-product-subarray", titleEn: "Maximum Product Subarray", titleCn: "乘积最大子数组" },
-    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "416", titleSlug: "partition-equal-subset-sum", titleEn: "Partition Equal Subset Sum", titleCn: "分割等和子集" },
-    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "32", titleSlug: "longest-valid-parentheses", titleEn: "Longest Valid Parentheses", titleCn: "最长有效括号" },
+    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "70", difficulty: "EASY", titleSlug: "climbing-stairs", titleEn: "Climbing Stairs", titleCn: "爬楼梯" },
+    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "118", difficulty: "EASY", titleSlug: "pascals-triangle", titleEn: "Pascal's Triangle", titleCn: "杨辉三角" },
+    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "198", difficulty: "MEDIUM", titleSlug: "house-robber", titleEn: "House Robber", titleCn: "打家劫舍" },
+    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "279", difficulty: "MEDIUM", titleSlug: "perfect-squares", titleEn: "Perfect Squares", titleCn: "完全平方数" },
+    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "322", difficulty: "MEDIUM", titleSlug: "coin-change", titleEn: "Coin Change", titleCn: "零钱兑换" },
+    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "139", difficulty: "MEDIUM", titleSlug: "word-break", titleEn: "Word Break", titleCn: "单词拆分" },
+    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "300", difficulty: "MEDIUM", titleSlug: "longest-increasing-subsequence", titleEn: "Longest Increasing Subsequence", titleCn: "最长递增子序列" },
+    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "152", difficulty: "MEDIUM", titleSlug: "maximum-product-subarray", titleEn: "Maximum Product Subarray", titleCn: "乘积最大子数组" },
+    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "416", difficulty: "MEDIUM", titleSlug: "partition-equal-subset-sum", titleEn: "Partition Equal Subset Sum", titleCn: "分割等和子集" },
+    { category: "动态规划 (Dynamic Programming)", frontendQuestionId: "32", difficulty: "HARD", titleSlug: "longest-valid-parentheses", titleEn: "Longest Valid Parentheses", titleCn: "最长有效括号" },
 
     // 多维动态规划 (Multi-dimensional DP)
-    { category: "多维动态规划 (Multi-dimensional DP)", frontendQuestionId: "62", titleSlug: "unique-paths", titleEn: "Unique Paths", titleCn: "不同路径" },
-    { category: "多维动态规划 (Multi-dimensional DP)", frontendQuestionId: "64", titleSlug: "minimum-path-sum", titleEn: "Minimum Path Sum", titleCn: "最小路径和" },
-    { category: "多维动态规划 (Multi-dimensional DP)", frontendQuestionId: "5", titleSlug: "longest-palindromic-substring", titleEn: "Longest Palindromic Substring", titleCn: "最长回文子串" },
-    { category: "多维动态规划 (Multi-dimensional DP)", frontendQuestionId: "1143", titleSlug: "longest-common-subsequence", titleEn: "Longest Common Subsequence", titleCn: "最长公共子序列" },
-    { category: "多维动态规划 (Multi-dimensional DP)", frontendQuestionId: "72", titleSlug: "edit-distance", titleEn: "Edit Distance", titleCn: "编辑距离" },
+    { category: "多维动态规划 (Multi-dimensional DP)", frontendQuestionId: "62", difficulty: "MEDIUM", titleSlug: "unique-paths", titleEn: "Unique Paths", titleCn: "不同路径" },
+    { category: "多维动态规划 (Multi-dimensional DP)", frontendQuestionId: "64", difficulty: "MEDIUM", titleSlug: "minimum-path-sum", titleEn: "Minimum Path Sum", titleCn: "最小路径和" },
+    { category: "多维动态规划 (Multi-dimensional DP)", frontendQuestionId: "5", difficulty: "MEDIUM", titleSlug: "longest-palindromic-substring", titleEn: "Longest Palindromic Substring", titleCn: "最长回文子串" },
+    { category: "多维动态规划 (Multi-dimensional DP)", frontendQuestionId: "1143", difficulty: "MEDIUM", titleSlug: "longest-common-subsequence", titleEn: "Longest Common Subsequence", titleCn: "最长公共子序列" },
+    { category: "多维动态规划 (Multi-dimensional DP)", frontendQuestionId: "72", difficulty: "MEDIUM", titleSlug: "edit-distance", titleEn: "Edit Distance", titleCn: "编辑距离" },
 
     // 技巧 (Bit Manipulation / Math)
-    { category: "技巧 (Bit Manipulation / Math)", frontendQuestionId: "136", titleSlug: "single-number", titleEn: "Single Number", titleCn: "只出现一次的数字" },
-    { category: "技巧 (Bit Manipulation / Math)", frontendQuestionId: "169", titleSlug: "majority-element", titleEn: "Majority Element", titleCn: "多数元素" },
-    { category: "技巧 (Bit Manipulation / Math)", frontendQuestionId: "75", titleSlug: "sort-colors", titleEn: "Sort Colors", titleCn: "颜色分类" },
-    { category: "技巧 (Bit Manipulation / Math)", frontendQuestionId: "31", titleSlug: "next-permutation", titleEn: "Next Permutation", titleCn: "下一个排列" },
-    { category: "技巧 (Bit Manipulation / Math)", frontendQuestionId: "287", titleSlug: "find-the-duplicate-number", titleEn: "Find the Duplicate Number", titleCn: "寻找重复数" },
+    { category: "技巧 (Bit Manipulation / Math)", frontendQuestionId: "136", difficulty: "EASY", titleSlug: "single-number", titleEn: "Single Number", titleCn: "只出现一次的数字" },
+    { category: "技巧 (Bit Manipulation / Math)", frontendQuestionId: "169", difficulty: "EASY", titleSlug: "majority-element", titleEn: "Majority Element", titleCn: "多数元素" },
+    { category: "技巧 (Bit Manipulation / Math)", frontendQuestionId: "75", difficulty: "MEDIUM", titleSlug: "sort-colors", titleEn: "Sort Colors", titleCn: "颜色分类" },
+    { category: "技巧 (Bit Manipulation / Math)", frontendQuestionId: "31", difficulty: "MEDIUM", titleSlug: "next-permutation", titleEn: "Next Permutation", titleCn: "下一个排列" },
+    { category: "技巧 (Bit Manipulation / Math)", frontendQuestionId: "287", difficulty: "MEDIUM", titleSlug: "find-the-duplicate-number", titleEn: "Find the Duplicate Number", titleCn: "寻找重复数" },
 ];
+
+/**
+ * 分类名的中文部分（「哈希 (Hash)」→「哈希」），难度分组的题目标签用
+ */
+export function categoryLabel(category: string): string {
+    return category.split(' ')[0];
+}
 
 /**
  * 按分类获取题目

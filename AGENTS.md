@@ -89,12 +89,12 @@ src/
 ├── data/
 │   └── hot100Data.ts     Hot 100 题目静态数据
 ├── views/
-│   ├── hot100Provider.ts TreeView 数据提供者（进度/状态筛选/错题回顾队列，判题结果经 recordJudgeResult 实时更新）
+│   ├── hot100Provider.ts TreeView 数据提供者（按分类/按难度分组、刷题统计节点、状态筛选/错题复习队列、列表元数据展示与本地收藏，判题结果经 recordJudgeResult 实时更新；分组方式/打卡日期/收藏集存 globalState）
 │   └── problemPanel.ts   题面/题解 webview：generatePanelHtml + Markdown 渲染器全家（公式/动画播放器/代码高亮）+ 图片本地化 + 播放器资源
 ├── judgeFeedback.ts      判题反馈（上报/输出通道/编辑器诊断/状态栏/在途锁/pollJudgeResult 轮询）
 ├── shared/
 │   └── webviewMessages.ts webview ↔ 扩展消息协议类型（webview 端是模板字符串 JS，只能靠类型做扩展端校验与文档）
-├── utils/                （judgeReport/problemText/loginCookie/networkRetry/progressStats/wrongQueue/htmlUtil 为无 vscode 依赖的纯逻辑，src/unit 单测覆盖）
+├── utils/                （judgeReport/problemText/loginCookie/networkRetry/progressStats/wrongQueue/htmlUtil/difficultyGroups/studyStats/questionOrder/metaFormat 为无 vscode 依赖的纯逻辑，src/unit 单测覆盖）
 │   ├── debugUtils.ts     本地调试文件生成（Python 驱动含原地入参比对 + pydevd 自排除注册）
 │   ├── judgeReport.ts    判题报告纯逻辑（逐用例分组 / 提交场景汇总回退 / 逐用例结构化信息提取）
 │   ├── problemText.ts    题面期望输出提取、文件名身份解析
@@ -129,17 +129,19 @@ src/
 
 3. **题解代码的来源**：`question.solution` 的 content 只有文字 + playground iframe，代码抓不到；真正带完整代码的题解是社区题解文章（`getSolutionArticles` → `getSolutionArticle`），其中 `byLeetcode: true` 的**官方文章**（如 `liang-shu-zhi-he-by-leetcode-solution`）包含官方的完整多语言代码（markdown 围栏 ` ```Java [sol1-Java]` 之类），且始终排在 `MOST_UPVOTE` 前 10 内。
 
-4. **webview 渲染的可靠性**：早期实现依赖 webview 里 CDN 加载的 `marked`（新版可能 API 变化/加载失败）和脚本执行顺序（`processCodeTabs` 定义在页面底部，早期内联代码块脚本可能先于其执行），容易导致代码不渲染。**当前方案** `renderMarkdownToHtml()` 直接在扩展端（TypeScript）完成完整 Markdown → 静态 HTML 渲染（标题/列表/表格/图片/代码块等），不依赖 CDN marked，确保内容一定能显示。`codeMode: 'all'` 时保留全部语言并生成标签页（`preferredFirst` 时优先语言 Python3/Python → C/C++ → 其他 排首位并默认选中，用于官方题解，接近网页版切换体验；社区题解保持原文顺序）；`'preferred'` 时只保留优先语言（用于 question.solution 文字回退）。KaTeX 公式为 webview 内 CDN 可选增强（加载失败不影响内容显示）；highlight.js（`vendor/highlight.min.js`，GitHub 明/暗配色由页面脚本按主题亮度切换 CSS 变量）为本地资源随扩展打包，题解代码语法高亮不依赖网络。注意 `.vscodeignore` 排除了 `src/**`，本地资源必须放 `vendor/` 或 `out/` 才会进 VSIX。视频题解先尝试内嵌 `<video>`（`https://video.leetcode.cn/{资产id}.mp4`），若 CDN 防盗链拒绝（video 元素触发 error）自动降级为浏览器播放入口。
+4. **官方题解动画帧有两种格式（2026-09 实测）**：旧格式 `![1200](url),...`（alt=帧停留毫秒数）；当前文章（如第 21 题）是 `<![fig1](url),...,![figN](url)>`——alt 为 `figN`、外层 `<![...]>` 包裹、尾部裸 `>`（渲染时先经 htmlToMarkdown 剥 `<![` 前缀，escapeHtml 后尾部变 `&gt;`）。`renderInlineMarkdown` 的动画正则已同时兼容两种（非数字 alt 取默认 1200ms）。新接入题的官方文章如出现平铺帧序列，先核对正文格式。
+5. **刷新题解卡死死循环的根因（2026-09 实测定位）**：VS Code webview 对**内容完全相同的 `panel.webview.html` 再次赋值不触发导航**（iframe src 未变、DOM 保留）——刷新重建的页面与首次加载字节级一致，赋值被吞、页面停在刷新按钮写的「加载题解中」占位符。配套机制：① `generatePanelHtml` 每次生成带唯一 nonce 注释（`lc-nonce:*`），保证任何赋值必然导航；② `extension.ts` 的 `solutionHtmlCache`（会话内，key=titleSlug）——刷新先立即渲染缓存、后台重取，内容与缓存一致时跳过二次赋值防闪屏；③ 首次加载整体 60s 超时（`withTimeout`，超时后内部流程不打断、晚到结果自愈覆盖页面）；④ 加载步骤打点（fetch list/official article/community pick/localize/done）输出到扩展控制台。改任何"重建 webview 页面"的路径（题解重取/文章打开/题目描述刷新）都必须经过 `generatePanelHtml` 拿到新 nonce，切勿手动拼接页面。
+6. **webview 渲染的可靠性**：早期实现依赖 webview 里 CDN 加载的 `marked`（新版可能 API 变化/加载失败）和脚本执行顺序（`processCodeTabs` 定义在页面底部，早期内联代码块脚本可能先于其执行），容易导致代码不渲染。**当前方案** `renderMarkdownToHtml()` 直接在扩展端（TypeScript）完成完整 Markdown → 静态 HTML 渲染（标题/列表/表格/图片/代码块等），不依赖 CDN marked，确保内容一定能显示。`codeMode: 'all'` 时保留全部语言并生成标签页（`preferredFirst` 时优先语言 Python3/Python → C/C++ → 其他 排首位并默认选中，用于官方题解，接近网页版切换体验；社区题解保持原文顺序）；`'preferred'` 时只保留优先语言（用于 question.solution 文字回退）。KaTeX 公式为 webview 内 CDN 可选增强（加载失败不影响内容显示）；highlight.js（`vendor/highlight.min.js`，GitHub 明/暗配色由页面脚本按主题亮度切换 CSS 变量）为本地资源随扩展打包，题解代码语法高亮不依赖网络。注意 `.vscodeignore` 排除了 `src/**`，本地资源必须放 `vendor/` 或 `out/` 才会进 VSIX。视频题解先尝试内嵌 `<video>`（`https://video.leetcode.cn/{资产id}.mp4`），若 CDN 防盗链拒绝（video 元素触发 error）自动降级为浏览器播放入口。
 
-5. **运行时依赖现状**：唯一运行时依赖是 `playwright-core`（登录），运行时 `require(context.extensionPath + '/vendor/playwright-core')`，打包走 vendor 副本（见打包步骤第 6 条），VSIX 始终不含 node_modules。历史死依赖 `marked` 已于 0.1.9 移除（主流程不 require、webview 不加载），勿再加回。
-6. **TLS 证书校验为严格模式（0.1.9 起恢复）**：所有 https 请求不再 `rejectUnauthorized: false`。代理空闲切断导致的瞬断由"超时 + `agent:false` 禁复用 + `isTransientNetworkError` 幂等重试"兜底（判定表见 `utils/networkRetry.ts` 单测）。若用户环境有 MITM 代理导致证书报错，会透出原始错误信息，不要重新关闭校验。
-7. **判题在途忙碌锁与轮询预算**：`judgeInFlight` 全局锁防测试/提交并发（`tryBeginJudge` 占位、withProgress 回调 finally 释放）；`pollJudgeResult` 退避轮询（1s 起 ×1.5 封顶 5s，预算 ~90s），期间状态栏 `judgeStatusBar` 显示已等待秒数。新增判题类命令务必复用这套，不要另起 while 循环。
+7. **运行时依赖现状**：唯一运行时依赖是 `playwright-core`（登录），运行时 `require(context.extensionPath + '/vendor/playwright-core')`，打包走 vendor 副本（见打包步骤第 6 条），VSIX 始终不含 node_modules。历史死依赖 `marked` 已于 0.1.9 移除（主流程不 require、webview 不加载），勿再加回。
+8. **TLS 证书校验为严格模式（0.1.9 起恢复）**：所有 https 请求不再 `rejectUnauthorized: false`。代理空闲切断导致的瞬断由"超时 + `agent:false` 禁复用 + `isTransientNetworkError` 幂等重试"兜底（判定表见 `utils/networkRetry.ts` 单测）。若用户环境有 MITM 代理导致证书报错，会透出原始错误信息，不要重新关闭校验。
+9. **判题在途忙碌锁与轮询预算**：`judgeInFlight` 全局锁防测试/提交并发（`tryBeginJudge` 占位、withProgress 回调 finally 释放）；`pollJudgeResult` 退避轮询（1s 起 ×1.5 封顶 5s，预算 ~90s），期间状态栏 `judgeStatusBar` 显示已等待秒数。新增判题类命令务必复用这套，不要另起 while 循环。
 
-8. **社区题解/pk检查脚本**：答题解析、注入若依赖外部 API，注意 `leetcodeApi.ts` 中 GraphQL 的字段名（如 `codeSnippets` 含 `lang`、`langSlug`、`code`）。
+10. **社区题解/pk检查脚本**：答题解析、注入若依赖外部 API，注意 `leetcodeApi.ts` 中 GraphQL 的字段名（如 `codeSnippets` 含 `lang`、`langSlug`、`code`）。
 
-9. **社区文章正文行尾**：部分社区题解文章（如《动画》系列）正文使用 `\r\n` 行尾，`renderMarkdownToHtml` 渲染前必须 `replace(/\r\n?/g, '\n')` 归一化，否则围栏代码块/标题匹配失败会显示原始 Markdown。
+11. **社区文章正文行尾**：部分社区题解文章（如《动画》系列）正文使用 `\r\n` 行尾，`renderMarkdownToHtml` 渲染前必须 `replace(/\r\n?/g, '\n')` 归一化，否则围栏代码块/标题匹配失败会显示原始 Markdown。
 
-10. **视频题解**：官方文章里的 `![xxx.mp4](资产id)` 指向 `video.leetcode.cn` 内部 CDN（防盗链+登录态，裸访问 403），webview 无法内嵌播放（与 playground iframe 同理）。已渲染为"播放视频题解"按钮，点击经 `openExternal` 消息在系统浏览器打开官方题解页。
+12. **视频题解**：官方文章里的 `![xxx.mp4](资产id)` 指向 `video.leetcode.cn` 内部 CDN（防盗链+登录态，裸访问 403），webview 无法内嵌播放（与 playground iframe 同理）。已渲染为"播放视频题解"按钮，点击经 `openExternal` 消息在系统浏览器打开官方题解页。
 
 ## 题解页数据流（当前实现）
 

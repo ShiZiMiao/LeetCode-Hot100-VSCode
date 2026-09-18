@@ -3,7 +3,10 @@
  */
 import { test } from 'node:test';
 import * as assert from 'node:assert';
-import { addWrongEntry, removeWrongEntry, formatFailedAt, WrongEntry } from '../utils/wrongQueue';
+import {
+    addWrongEntry, removeWrongEntry, formatFailedAt, WrongEntry,
+    failureCountOf, nextReviewAt, isReviewDue, sortWrongByReview, REVIEW_INTERVALS_DAYS
+} from '../utils/wrongQueue';
 
 const entry = (slug: string, failedAt: number, reason = 'Wrong Answer'): WrongEntry => ({ titleSlug: slug, title: slug, failedAt, reason });
 
@@ -40,4 +43,46 @@ test('removeWrongEntry：按 slug 移除', () => {
 test('formatFailedAt：格式化与无效时间', () => {
     assert.match(formatFailedAt(Date.UTC(2026, 8, 16, 3, 5)), /^\d{2}-\d{2} \d{2}:\d{2}$/);
     assert.strictEqual(formatFailedAt(NaN), '');
+});
+
+test('failureCountOf：旧格式条目（无 failCount）按 1 计', () => {
+    assert.strictEqual(failureCountOf(entry('a', 1)), 1);
+    assert.strictEqual(failureCountOf({ titleSlug: 'a', title: 'a', failedAt: 1, reason: 'r', failCount: 5 }), 5);
+    assert.strictEqual(failureCountOf({ titleSlug: 'a', title: 'a', failedAt: 1, reason: 'r', failCount: 0 }), 1);
+});
+
+test('addWrongEntry：同 slug 再次失败累计次数、刷新时间原因', () => {
+    let list: WrongEntry[] = [];
+    list = addWrongEntry(list, entry('a', 100));
+    assert.strictEqual(list[0].failCount, 1);
+    list = addWrongEntry(list, entry('a', 300, 'Time Limit Exceeded'));
+    assert.strictEqual(list[0].failCount, 2);
+    assert.strictEqual(list[0].reason, 'Time Limit Exceeded');
+    assert.strictEqual(list[0].failedAt, 300);
+    assert.strictEqual(list.length, 1);
+    list = addWrongEntry(list, entry('a', 400));
+    assert.strictEqual(list[0].failCount, 3);
+});
+
+test('nextReviewAt/isReviewDue：间隔递增（1/3/7/14/30 天，封顶 30 天）', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const e1 = { titleSlug: 'a', title: 'a', failedAt: 1000, reason: 'r', failCount: 1 };
+    assert.strictEqual(nextReviewAt(e1), 1000 + REVIEW_INTERVALS_DAYS[0] * DAY);
+    const e3 = { ...e1, failCount: 3 };
+    assert.strictEqual(nextReviewAt(e3), 1000 + REVIEW_INTERVALS_DAYS[2] * DAY);
+    const e99 = { ...e1, failCount: 99 };
+    assert.strictEqual(nextReviewAt(e99), 1000 + REVIEW_INTERVALS_DAYS[REVIEW_INTERVALS_DAYS.length - 1] * DAY);
+    // 到期判断：早于/晚于到期时间
+    assert.strictEqual(isReviewDue(e1, 1000 + DAY - 1), false);
+    assert.strictEqual(isReviewDue(e1, 1000 + DAY), true);
+});
+
+test('sortWrongByReview：到期时间升序（已到期的排最前）', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    // A：失败时间 1000（1 天后到期），B：失败时间 2000（1 天后到期，比 A 晚），
+    // C：失败时间很久以前（已到期）
+    const a: WrongEntry = { titleSlug: 'a', title: 'a', failedAt: 1000, reason: 'r', failCount: 1 };
+    const b: WrongEntry = { titleSlug: 'b', title: 'b', failedAt: 2000, reason: 'r', failCount: 1 };
+    const c: WrongEntry = { titleSlug: 'c', title: 'c', failedAt: 1000 - 10 * DAY, reason: 'r', failCount: 1 };
+    assert.deepStrictEqual(sortWrongByReview([a, b, c]).map(e => e.titleSlug), ['c', 'a', 'b']);
 });
