@@ -2,6 +2,19 @@
 
 All notable changes to the "leetcode" extension will be documented in this file.
 
+## 0.1.13
+
+- **侧栏入口补全**：新增「⭐ 我的收藏」分组（有收藏才显示，子项按当前分组顺序排列，右键题目行取消收藏即时反映）；「📅 今日每日一题」一键节点（点击直达，不再只藏在命令面板）
+- **复习错题流程**：命令「LeetCode: 复习错题」按到期顺序逐题打开（到期的优先），今日已复习记录跨会话保存（按日期自动重置），全部复习完提示「今日错题已全部复习完成 🎉」
+- **快捷键补齐**：每日一题 `Ctrl+Alt+D`、随机抽题 `Ctrl+Alt+R`、复习错题 `Ctrl+Alt+W`、打开笔记 `Ctrl+Alt+N`、收藏/取消收藏 `Ctrl+Alt+L`（macOS 为 Cmd+Alt）
+- **修复随机抽题按钮空白图标**：`$(shuffle)` 不是合法 codicon（VS Code 官方图标清单无此名，渲染为空白），改为 `$(sparkle)`；发版前图标名已对照官方 icons-in-labels 清单核查
+- **修复提交历史 URL 边界**：submissionList 的 url 为空或不存在时可能拼出 `https://leetcode.cn/` 首页（而非该次提交页），现统一回退为「提交 id + slug」构造的完整地址
+- **修复本地调试驱动用例嵌入 SyntaxError**：样例为带引号的字符串（如第 20 题括号题，行尾以 `"` 结尾）时，Python 驱动把用例直接拼进 `"""..."""` 会与闭合定界符连成 4 连引号报 `unterminated string literal`——用例改为 base64 内嵌（与期望输出同一机制）；JS/TS 驱动同步改为 JSON 转义内嵌（防反引号/`${}`/换行破坏）
+- **修复 webview HTML 注入与转义缺失**：社区题解标题/作者、题面标题等 API 文本直接拼入 HTML 会破坏布局（标题含 `<` 等特殊字符时页面错乱）；独立「查看题解」面板的文章全文未经渲染器直接输出（原始 Markdown/HTML 注入的风险点）——全部改走 `escapeHtml`/`renderMarkdownToHtml`
+- **修复图片本地化前缀包含损坏**：某图 URL 是另一 URL 前缀时（同图带/不带查询参数），短 URL 先替换会把长 URL 切断——改为按 URL 长度降序替换
+- **修复快速运行在 PowerShell 下失效**：Java/C++/Rust/C 的编译运行命令用 `&&` 拼接，Windows 默认 PowerShell 5.1 不支持——改为逐条 sendText（先 cd 再编译再运行，cmd/PowerShell/bash 通吃）
+- **工程**：`pickReviewCandidate` 纯逻辑（到期优先/跳过已复习/统计）入 `utils/wrongQueue.ts` 并补单测；AGENTS.md/README/MARKETPLACE/ROADMAP 同步
+
 ## 0.1.12
 
 - **侧栏按难度分组**：分组方式可在「按分类（官网默认）/按难度」间切换（侧栏标题按钮或命令面板，选择持久化）——难度分组按 简单 → 中等 → 困难 排列，同一难度内按题号从小到大；难度数据随静态数据离线可用，接口实时值优先

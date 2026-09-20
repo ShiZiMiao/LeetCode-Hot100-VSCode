@@ -41,6 +41,9 @@ export function generatePythonDebugDriver(
         }
     });
     const expectedB64 = Buffer.from(JSON.stringify(expectedMeta), 'utf8').toString('base64');
+    // 用例文本同样以 base64 内嵌：样例为带引号字符串（如第 20 题括号题，行尾是 " ），
+    // 直接拼进 """...""" 会与闭合定界符连成 4 连引号产生 SyntaxError
+    const testCasesB64 = Buffer.from(testCases, 'utf8').toString('base64');
 
     // 特殊判题题：设计类（操作序列格式）、160（校验参数 intersectVal 在最前）、
     // 138（Node 带 random 指针，本地 ListNode 无法等价还原），无法通用运行官方示例
@@ -350,7 +353,7 @@ if __name__ == "__main__":
     solution = Solution()
 
     # LeetCode 测试用例（每行一个 JSON 值；带 "名称 = " 前缀时自动剥离）
-    test_cases = """${testCases}"""
+    test_cases = base64.b64decode("${testCasesB64}").decode('utf-8')
 
     print("=" * 50)
     print("开始本地调试")
@@ -807,7 +810,7 @@ console.log("开始本地调试");
 console.log("==================================================");
 
 // LeetCode 测试用例
-const testCases = \`${testCases}\`;
+const testCases = ${JSON.stringify(testCases)};
 
 const lines = testCases.trim().split('\\n').filter(line => line.trim());
 
@@ -940,7 +943,7 @@ console.log("开始本地调试");
 console.log("==================================================");
 
 // LeetCode 测试用例
-const testCases = \`${testCases}\`;
+const testCases = ${JSON.stringify(testCases)};
 
 const lines = testCases.trim().split('\\n').filter(line => line.trim());
 

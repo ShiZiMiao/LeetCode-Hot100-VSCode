@@ -17,7 +17,8 @@ import { StatusFilter } from './utils/progressStats';
 import { Hot100Question, HOT_100_LIST, HOT_100_IDS, categoryLabel } from './data/hot100Data';
 import { DIFFICULTY_ZH, isDifficultyLevel } from './utils/difficultyGroups';
 import { nextQuestion } from './utils/questionOrder';
-import { isReviewDue, formatFailedAt } from './utils/wrongQueue';
+import { isReviewDue, formatFailedAt, pickReviewCandidate } from './utils/wrongQueue';
+import { localDateStr } from './utils/studyStats';
 import { selectLanguage, getExtension, SUPPORTED_LANGUAGES } from './utils/languageUtils';
 import { generateDebugFile } from './utils/debugUtils';
 import { buildJudgeReport, collectJudgeCaseInfos, JudgeCaseInfo } from './utils/judgeReport';
@@ -523,10 +524,14 @@ function resolveTargetWorkspaceFolder(relatedPath?: string): vscode.WorkspaceFol
 	if (activePath) {
 		candidates.push(activePath);
 	}
+	// Windows 路径大小写不敏感：盘符/目录大小写差异（d:\ vs D:\）需归一后再比较，
+	// 否则匹配失败会错误回退到第一个工作区（符号链接/映射盘仍无法完美区分，属残余限制）
+	const normalize = (s: string) => (process.platform === 'win32' ? s.toLowerCase() : s).replace(/[\\/]+$/, '');
 	for (const p of candidates) {
+		const np = normalize(p);
 		const match = folders.find(f => {
-			const root = f.uri.fsPath.replace(/[\\/]+$/, '');
-			return p === root || p.startsWith(root + '\\') || p.startsWith(root + '/');
+			const root = normalize(f.uri.fsPath);
+			return np === root || np.startsWith(root + '\\') || np.startsWith(root + '/');
 		});
 		if (match) {
 			return match;
@@ -820,6 +825,45 @@ export function activate(context: vscode.ExtensionContext) {
 		} catch (error) {
 			vscode.window.showErrorMessage(`打开笔记失败: ${errMsg(error)}`);
 		}
+	}));
+
+	// 复习错题：按到期顺序逐题打开（到期的优先），今日已复习记录跨会话保存（按日期重置），全部复习完提示
+	context.subscriptions.push(vscode.commands.registerCommand('leetcode.reviewWrong', async () => {
+		const wrongs = hot100Provider.currentWrongList();
+		if (wrongs.length === 0) {
+			vscode.window.showInformationMessage('错题回顾队列为空，提交失败后会自动记录');
+			return;
+		}
+		const REVIEW_KEY = 'hot100ReviewedToday';
+		let rec = context.globalState.get<{ date: string; slugs: string[] }>(REVIEW_KEY, { date: '', slugs: [] });
+		if (!Array.isArray(rec?.slugs) || rec.date !== localDateStr()) {
+			rec = { date: localDateStr(), slugs: [] };
+		}
+		const res = pickReviewCandidate(wrongs, rec.slugs);
+		const entry = res.entry;
+		if (!entry) {
+			if (res.reviewedCount >= res.total) {
+				vscode.window.showInformationMessage(`今日错题已全部复习完成 🎉（共 ${res.total} 题）`);
+			} else {
+				vscode.window.showInformationMessage(`暂无到期待复习的错题（今日已复习 ${res.reviewedCount}/${res.total}，其余未到期）`);
+			}
+			return;
+		}
+		rec.slugs = [...rec.slugs, entry.titleSlug];
+		// 今日已复习记录为 best-effort 缓存：写入失败不阻断复习流（题目照常打开）
+		try {
+			await context.globalState.update(REVIEW_KEY, rec);
+		} catch (e) {
+			console.error(`[reviewWrong] 记录今日复习进度失败: ${errMsg(e)}`);
+		}
+		const q = HOT_100_LIST.find(x => x.titleSlug === entry.titleSlug);
+		if (q) {
+			await vscode.commands.executeCommand('leetcode.openProblem', buildQuestion(q));
+		} else {
+			vscode.window.showWarningMessage(`错题「${entry.title}」不在 Hot 100 列表中，无法直接打开`);
+			return;
+		}
+		vscode.window.showInformationMessage(`复习错题：${q.titleCn}（今日第 ${res.reviewedCount + 1}/${res.total} 题）`);
 	}));
 
 	// 清空错题回顾队列
@@ -1399,8 +1443,8 @@ if (article && article.content) {
 									const tags = article.byLeetcode ? '👑 官方 ' : '';
 									return `
 										<div class="article-item" onclick="openArticle('${article.slug}')">
-											<div class="article-title">${article.title}</div>
-											<div class="article-meta">${tags}👍 ${article.upvoteCount} | 作者: ${author}</div>
+											<div class="article-title">${escapeHtml(article.title)}</div>
+											<div class="article-meta">${tags}👍 ${article.upvoteCount} | 作者: ${escapeHtml(author)}</div>
 										</div>
 									`;
 								}).join('');
@@ -1621,8 +1665,8 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '_v3.mp4');
 									let articleHtml = `
 										<div class="solution-section">
 											<button onclick="vscode.postMessage({type:'loadSolution'})" style="background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-bottom:20px;">← 返回列表</button>
-											<h2>${article.title}</h2>
-											<div class="article-meta" style="margin-bottom:20px;">👍 ${article.upvoteCount} | 作者: ${article.author?.profile?.realName || article.author?.username || '匿名'}${article.byLeetcode ? ' | 👑 官方' : ''}</div>
+											<h2>${escapeHtml(article.title)}</h2>
+											<div class="article-meta" style="margin-bottom:20px;">👍 ${article.upvoteCount} | 作者: ${escapeHtml(article.author?.profile?.realName || article.author?.username || '匿名')}${article.byLeetcode ? ' | 👑 官方' : ''}</div>
 											<div class="solution-content">${renderMarkdownToHtml(cleanedArticle, 'all')}</div>
 										</div>
 									`;
@@ -2013,6 +2057,7 @@ const check = await pollJudgeResult(leetCodeApi, interpretId);
 
 		// 根据文件扩展名确定运行命令
 		let runCommand: string | null = null;
+		let runSteps: string[] = [];
 
 		if (filePath.endsWith('.py')) {
 			const currentProblem = context.workspaceState.get<any>('currentProblem');
@@ -2059,37 +2104,46 @@ const check = await pollJudgeResult(leetCodeApi, interpretId);
 		} else if (filePath.endsWith('.ts')) {
 			runCommand = `npx ts-node "${filePath}"`;
 		} else if (filePath.endsWith('.java')) {
-			// Java需要先编译再运行
+			// Java需先编译再运行；命令拆多条逐条发送：Windows 默认 PowerShell 5.1 不支持 &&，
+			// 单条 sendText 逐行执行在 cmd/PowerShell/bash 下都成立
 			const className = fileName.replace('.java', '');
-			runCommand = `cd "${fileDir}" && javac "${fileName}" && java ${className}`;
+			runSteps = [`cd "${fileDir}"`, `javac "${fileName}"`, `java "${className}"`];
 		} else if (filePath.endsWith('.cpp')) {
-			// C++需要先编译再运行
+			// C++需先编译再运行
 			const exeName = fileName.replace('.cpp', '');
-			runCommand = `cd "${fileDir}" && g++ -std=c++17 -o "${exeName}" "${fileName}" && ./"${exeName}"`;
+			const exe = process.platform === 'win32' ? `.\\"${exeName}"` : `./"${exeName}"`;
+			runSteps = [`cd "${fileDir}"`, `g++ -std=c++17 -o "${exeName}" "${fileName}"`, exe];
 		} else if (filePath.endsWith('.go')) {
 			runCommand = `go run "${filePath}"`;
 		} else if (filePath.endsWith('.rs')) {
-			// Rust需要先编译再运行
+			// Rust需先编译再运行
 			const exeName = fileName.replace('.rs', '');
-			runCommand = `cd "${fileDir}" && rustc "${fileName}" -o "${exeName}" && ./"${exeName}"`;
+			const exe = process.platform === 'win32' ? `.\\"${exeName}"` : `./"${exeName}"`;
+			runSteps = [`cd "${fileDir}"`, `rustc "${fileName}" -o "${exeName}"`, exe];
 		} else if (filePath.endsWith('.c')) {
-			// C需要先编译再运行
+			// C需先编译再运行
 			const exeName = fileName.replace('.c', '');
-			runCommand = `cd "${fileDir}" && gcc -o "${exeName}" "${fileName}" && ./"${exeName}"`;
+			const exe = process.platform === 'win32' ? `.\\"${exeName}"` : `./"${exeName}"`;
+			runSteps = [`cd "${fileDir}"`, `gcc -o "${exeName}" "${fileName}"`, exe];
 		}
 
-		if (!runCommand) {
+		if (!runCommand && runSteps.length === 0) {
 			vscode.window.showWarningMessage('不支持运行此类型的文件');
 			return;
 		}
 
-		// 创建或获取终端并运行命令
+		// 创建或获取终端并运行命令（多步重建：逐条发送，先 cd 再编译再运行）
 		let terminal = vscode.window.terminals.find(t => t.name === 'LeetCode');
 		if (!terminal) {
 			terminal = vscode.window.createTerminal('LeetCode');
 		}
 		terminal.show();
-		terminal.sendText(runCommand);
+		if (runCommand) {
+			terminal.sendText(runCommand);
+		}
+		for (const step of runSteps) {
+			terminal.sendText(step);
+		}
 	});
 
 	// ==================== 查看题解命令 ====================
@@ -2177,11 +2231,11 @@ const check = await pollJudgeResult(leetCodeApi, interpretId);
 						const isPick = article.isEditorsPick ? '⭐ 精选' : '';
 						return `
 							<div class="article-item" onclick="openArticle('${article.slug}')">
-								<div class="article-title">${article.title}</div>
+								<div class="article-title">${escapeHtml(article.title)}</div>
 								<div class="article-meta">
 									${isOfficial} ${isPick}
 									<span>👍 ${article.upvoteCount}</span>
-									<span>作者: ${author}</span>
+									<span>作者: ${escapeHtml(author)}</span>
 								</div>
 								<div class="article-summary">${article.summary || ''}</div>
 							</div>
@@ -2339,13 +2393,13 @@ const check = await pollJudgeResult(leetCodeApi, interpretId);
 									</head>
 									<body>
 										<button class="back-btn" onclick="history.back()">← 返回列表</button>
-										<h1>${article.title}</h1>
+										<h1>${escapeHtml(article.title)}</h1>
 										<div class="meta">
 											👍 ${article.upvoteCount} | 
-											作者: ${article.author?.profile?.realName || article.author?.username || '匿名'}
+											作者: ${escapeHtml(article.author?.profile?.realName || article.author?.username || '匿名')}
 											${article.byLeetcode ? ' | 👑 官方' : ''}
 										</div>
-										<div>${article.content}</div>
+										<div class="solution-content">${renderMarkdownToHtml(article.content, 'all')}</div>
 									</body>
 									</html>
 								`;

@@ -89,7 +89,7 @@ src/
 ├── data/
 │   └── hot100Data.ts     Hot 100 题目静态数据
 ├── views/
-│   ├── hot100Provider.ts TreeView 数据提供者（按分类/按难度分组、刷题统计节点、状态筛选/错题复习队列、列表元数据展示与本地收藏，判题结果经 recordJudgeResult 实时更新；分组方式/打卡日期/收藏集存 globalState）
+│   ├── hot100Provider.ts TreeView 数据提供者（按分类/按难度分组、刷题统计节点、每日一题入口、状态筛选/错题复习队列/收藏分组、列表元数据展示与本地收藏，判题结果经 recordJudgeResult 实时更新；分组方式/打卡日期/收藏集/今日已复习存 globalState）
 │   └── problemPanel.ts   题面/题解 webview：generatePanelHtml + Markdown 渲染器全家（公式/动画播放器/代码高亮）+ 图片本地化 + 播放器资源
 ├── judgeFeedback.ts      判题反馈（上报/输出通道/编辑器诊断/状态栏/在途锁/pollJudgeResult 轮询）
 ├── shared/

@@ -17,7 +17,7 @@ import { formatAcRate } from '../utils/metaFormat';
 export type { GroupByMode } from '../utils/questionOrder';
 
 // 树形节点类型
-type TreeNode = CategoryItem | QuestionItem | ProgressItem | WrongCategoryItem | DifficultyItem | StatsItem | StatsRowItem;
+type TreeNode = CategoryItem | QuestionItem | ProgressItem | WrongCategoryItem | DifficultyItem | StatsItem | StatsRowItem | FavoriteItem | DailyItem;
 
 const WRONG_STORE_KEY = 'hot100WrongQueue';
 const GROUP_BY_STORE_KEY = 'hot100GroupBy';
@@ -194,9 +194,12 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
             const totalStats = computeProgressStats(
                 HOT_100_LIST.map(q => statusOf(this.questionStatusMap.get(q.frontendQuestionId)))
             );
-            const nodes: TreeNode[] = [new ProgressItem(totalStats, this.filter), new StatsItem()];
+            const nodes: TreeNode[] = [new ProgressItem(totalStats, this.filter), new StatsItem(), new DailyItem()];
             if (this.wrongList.length > 0) {
                 nodes.push(new WrongCategoryItem(this.wrongList.length));
+            }
+            if (this.favoriteIds.size > 0) {
+                nodes.push(new FavoriteItem(this.favoriteIds.size));
             }
             if (this.groupBy === 'difficulty') {
                 // 按难度：简单 → 中等 → 困难，组内按题号升序；筛选后无匹配题目时隐藏分组
@@ -231,6 +234,13 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
         // 刷题统计：总进度 + 难度/分类分布 + 连续打卡 + 今日目标
         if (element instanceof StatsItem) {
             return this.buildStatsRows();
+        }
+
+        // 我的收藏：按当前分组顺序排列
+        if (element instanceof FavoriteItem) {
+            return orderedQuestions(HOT_100_LIST, this.groupBy)
+                .filter(q => this.isFavorite(q.frontendQuestionId))
+                .map(q => this.toQuestionItem(q));
         }
 
         // 难度分组下面：显示该难度内按题号升序的题目
@@ -515,6 +525,31 @@ export class StatsRowItem extends vscode.TreeItem {
         if (contextValue === 'statsGoal') {
             this.command = { command: 'leetcode.setDailyGoal', title: '设置每日目标' };
         }
+    }
+}
+
+/**
+ * 每日一题入口节点（点击直达官网今日题目，可能不在 Hot 100 内）
+ */
+export class DailyItem extends vscode.TreeItem {
+    constructor() {
+        super('📅 今日每日一题', vscode.TreeItemCollapsibleState.None);
+        this.tooltip = '打开 LeetCode 官网每日一题（可能不在 Hot 100 内，题面/判题/题解流程通用）';
+        this.iconPath = new vscode.ThemeIcon('calendar');
+        this.command = { command: 'leetcode.dailyQuestion', title: '每日一题' };
+        this.contextValue = 'daily';
+    }
+}
+
+/**
+ * 我的收藏分组节点（本地收藏，右键题目行切换；子项按当前分组顺序排列）
+ */
+export class FavoriteItem extends vscode.TreeItem {
+    constructor(count: number) {
+        super(`⭐ 我的收藏（${count}）`, vscode.TreeItemCollapsibleState.Collapsed);
+        this.tooltip = '本地收藏的题目（右键题目行可收藏/取消收藏），按当前分组顺序排列';
+        this.iconPath = new vscode.ThemeIcon('star');
+        this.contextValue = 'favorite';
     }
 }
 

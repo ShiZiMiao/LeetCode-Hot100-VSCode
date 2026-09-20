@@ -613,13 +613,15 @@ export class LeetCodeApi {
         return subs
             .filter((s: any) => s && s.id)
             .map((s: any) => {
-                // submissionList 的 url 可能为相对路径（如 /submissions/{id}/），
-                // openExternal 需要绝对 https 地址，缺失/相对时拼接补全
+                // submissionList 的 url 可能为相对路径（如 /submissions/{id}/）或缺失，
+                // openExternal 需要绝对 https 地址；仅接受绝对 URL 或 /problems/ 形态的相对路径
+                //（其他相对形态拼在根域下是 404），否则回退为按 slug+id 构造的提交页
                 let url = typeof s.url === 'string' ? s.url.trim() : '';
-                if (!url.startsWith('http://') && !url.startsWith('https://')) {
-                    url = 'https://leetcode.cn' + (url.startsWith('/') ? url : `/${url}`);
+                if (url && !/^https?:\/\//i.test(url)) {
+                    const pathPart = url.startsWith('/') ? url : `/${url}`;
+                    url = /^\/problems\//.test(pathPart) ? 'https://leetcode.cn' + pathPart : '';
                 }
-                if (url === 'https://leetcode.cn') {
+                if (!url || !/^https?:\/\//i.test(url)) {
                     url = `https://leetcode.cn/problems/${titleSlug}/submissions/${s.id}/`;
                 }
                 return {

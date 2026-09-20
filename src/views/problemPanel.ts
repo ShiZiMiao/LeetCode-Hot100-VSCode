@@ -84,7 +84,10 @@ export async function localizeContentImages(html: string, panel: vscode.WebviewP
 	await Promise.all(workers);
 
 	let out = html;
-	for (const [src, localUri] of succeeded) {
+	// 按 URL 长度降序替换：某 URL 是另一 URL 的前缀时（如同图带/不带查询参数），
+	// 先替换长串可避免短串把长串切断，src 不会与被替换内容重叠
+	for (const src of [...succeeded.keys()].sort((a, b) => b.length - a.length)) {
+		const localUri = succeeded.get(src)!;
 		out = out.split(src).join(localUri);
 	}
 	return out;
@@ -527,7 +530,7 @@ export const generatePanelHtml = (
 					<head>
 						<meta charset="UTF-8">
 						<meta name="viewport" content="width=device-width, initial-scale=1.0">
-						<title>${q.questionFrontendId}. ${title}</title>
+						<title>${escapeHtml(q.questionFrontendId)}. ${escapeHtml(title)}</title>
 						<style>
 							body {
 								font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -1133,7 +1136,7 @@ export const generatePanelHtml = (
 						
 						<div class="content-wrapper">
 <div id="problem-tab" class="${activeTab === 'problem' ? '' : 'hidden'}">
-									<h1>${q.questionFrontendId}. ${title}</h1>
+									<h1>${escapeHtml(q.questionFrontendId)}. ${escapeHtml(title)}</h1>
 									<div class="meta">
 										<span class="difficulty-${q.difficulty.toLowerCase()}">${difficulty}</span>
 										 | 👍 ${q.likes} | 👎 ${q.dislikes}

@@ -70,7 +70,7 @@ test('generateDebugFile：Python 驱动内嵌期望输出 base64 可解码且不
 	const snippet = 'class Solution:\n    def f(self, x):\n        return x\n';
 	const gen = generateDebugFile('python3', '999', 'sample-slug', '[1]', snippet, '/tmp/999_sample-slug.py', ['[1]', 'bad " quote \\"']);
 	assert.ok(gen);
-	const m = gen!.content.match(/b64decode\("([^"]+)"\)/);
+	const m = gen!.content.match(/expected_meta = json\.loads\(base64\.b64decode\("([^"]+)"\)\)/);
 	assert.ok(m, '驱动应含 base64 期望输出');
 	const decoded = JSON.parse(Buffer.from(m![1], 'base64').toString('utf8'));
 	// 每项 [是否可 JSON 解析, 值]：'[1]' 可解析；后者是题面非标准文本 → 标 0（驱动侧显示"未校验"）
@@ -81,9 +81,46 @@ test('generateDebugFile：判题失败用例单例输入与期望正确内嵌', 
 	const snippet = 'class Solution:\n    def sortColors(self, nums):\n        pass\n';
 	const gen = generateDebugFile('python3', '75', 'sort-colors', '[2,1]', snippet, '/tmp/75_sort-colors.py', ['[2,1]']);
 	assert.ok(gen);
-	assert.match(gen!.content, /test_cases = """\[2,1\]"""/, '失败用例输入应写入 test_cases');
-	const m = gen!.content.match(/b64decode\("([^"]+)"\)/);
-	assert.ok(m, '驱动应含 base64 期望输出');
-	const decoded = JSON.parse(Buffer.from(m![1], 'base64').toString('utf8'));
+	const m = gen!.content.match(/test_cases = base64\.b64decode\("([^"]+)"\)/);
+	assert.ok(m, '驱动应以 base64 内嵌测试用例');
+	assert.strictEqual(Buffer.from(m![1], 'base64').toString('utf8'), '[2,1]');
+	const em = gen!.content.match(/expected_meta = json\.loads\(base64\.b64decode\("([^"]+)"\)\)/);
+	assert.ok(em, '驱动应含 base64 期望输出');
+	const decoded = JSON.parse(Buffer.from(em![1], 'base64').toString('utf8'));
 	assert.deepEqual(decoded, [[1, [2, 1]]]);
+});
+
+test('Python 驱动：用例为带引号字符串（第 20 题括号题）不再产生 SyntaxError', () => {
+	const py = process.platform === 'win32' ? 'python' : 'python3';
+	const probe = spawnSync(py, ['--version'], { encoding: 'utf8' });
+	if (probe.status !== 0) {
+		return; // 无 python 环境跳过（与上方比对语义测试一致）
+	}
+	const snippet = 'class Solution:\n    def isValid(self, s: str) -> bool:\n        pass\n';
+	// 样例每行是带引号的 JSON 字符串值，首尾行都以 " 结尾（正是触发 4 连引号 SyntaxError 的形态）
+	const cases = '"()"\n"()[]{}"\n"(]"\n"([])"\n"([)]"';
+	const gen = generateDebugFile('python3', '20', 'valid-parentheses', cases, snippet, '/tmp/20_valid-parentheses.py', ['true', 'true', 'false', 'true', 'false']);
+	assert.ok(gen);
+	// 语法必须合法（旧实现拼 """...""" 直接 SyntaxError: unterminated string literal）
+	const check = spawnSync(py, ['-c', 'import ast,sys; ast.parse(sys.stdin.buffer.read().decode(\'utf-8\'))'], {
+		encoding: 'utf8',
+		input: gen!.content
+	});
+	assert.strictEqual(check.status, 0, `驱动语法错误: ${check.stderr}`);
+	// 用例内容经 base64 往返后与原文一致（含换行与引号）
+	const m = gen!.content.match(/test_cases = base64\.b64decode\("([^"]+)"\)/);
+	assert.ok(m, '驱动应以 base64 内嵌测试用例');
+	assert.strictEqual(Buffer.from(m![1], 'base64').toString('utf8'), cases);
+});
+
+test('JS 驱动：用例含反引号/${} 不破坏模板字符串（JSON 转义内嵌）', () => {
+	const snippet = '/**\n * @param {string} s\n */\nvar isValid = function(s) { return true; };\n';
+	const cases = '`tick`\n${expr}\nline2';
+	// 用例里故意放反引号与 ${} —— 旧实现直接将 testCases 拼进反引号模板会语法错误
+	const gen = generateDebugFile('javascript', '20', 'valid-parentheses', cases, snippet, '/tmp/20_valid-parentheses.js', ['true']);
+	assert.ok(gen);
+	// 新 Function 只编译不执行（顶层 require 调用在函数体内合法，仅未执行）
+	assert.doesNotThrow(() => new Function(gen!.content), 'JS 驱动编译失败');
+	// JSON.stringify 转义：文件内是 \n（反斜杠+n 两字符）而非真实换行
+	assert.ok(gen!.content.includes('const testCases = "`tick`\\n${expr}\\nline2";'), '用例应经 JSON 转义内嵌');
 });

@@ -5,7 +5,8 @@ import { test } from 'node:test';
 import * as assert from 'node:assert';
 import {
     addWrongEntry, removeWrongEntry, formatFailedAt, WrongEntry,
-    failureCountOf, nextReviewAt, isReviewDue, sortWrongByReview, REVIEW_INTERVALS_DAYS
+    failureCountOf, nextReviewAt, isReviewDue, sortWrongByReview, REVIEW_INTERVALS_DAYS,
+    pickReviewCandidate
 } from '../utils/wrongQueue';
 
 const entry = (slug: string, failedAt: number, reason = 'Wrong Answer'): WrongEntry => ({ titleSlug: slug, title: slug, failedAt, reason });
@@ -85,4 +86,30 @@ test('sortWrongByReview：到期时间升序（已到期的排最前）', () => 
     const b: WrongEntry = { titleSlug: 'b', title: 'b', failedAt: 2000, reason: 'r', failCount: 1 };
     const c: WrongEntry = { titleSlug: 'c', title: 'c', failedAt: 1000 - 10 * DAY, reason: 'r', failCount: 1 };
     assert.deepStrictEqual(sortWrongByReview([a, b, c]).map(e => e.titleSlug), ['c', 'a', 'b']);
+});
+
+test('pickReviewCandidate：到期优先、跳过已复习、全部复习完返回空', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const now = 10000000;
+    // a：已到期；b：未到期（1000ms 前失败 + 1 天间隔 → 未到期…… 用 far past 使其到期）
+    const a: WrongEntry = { titleSlug: 'a', title: 'a', failedAt: now - 2 * DAY, reason: 'r', failCount: 1 };
+    const b: WrongEntry = { titleSlug: 'b', title: 'b', failedAt: now - 2 * DAY, reason: 'r', failCount: 1 };
+    const c: WrongEntry = { titleSlug: 'c', title: 'c', failedAt: now - 1000, reason: 'r', failCount: 1 };
+    // 未复习：取到期最早的（a/b 同 failedAt，稳定序取 a）
+    const r1 = pickReviewCandidate([c, a, b], [], now);
+    assert.strictEqual(r1.entry?.titleSlug, 'a');
+    assert.strictEqual(r1.total, 3);
+    assert.strictEqual(r1.dueRemaining, 2);
+    // 今日已复习 a：跳到下一个到期（b）
+    const r2 = pickReviewCandidate([c, a, b], ['a'], now);
+    assert.strictEqual(r2.entry?.titleSlug, 'b');
+    assert.strictEqual(r2.reviewedCount, 1);
+    // 全部复习完：entry 为空
+    const r3 = pickReviewCandidate([c, a, b], ['a', 'b', 'c'], now);
+    assert.strictEqual(r3.entry, undefined);
+    assert.strictEqual(r3.reviewedCount, 3);
+    // 空队列
+    const r4 = pickReviewCandidate([], [], now);
+    assert.strictEqual(r4.entry, undefined);
+    assert.strictEqual(r4.total, 0);
 });

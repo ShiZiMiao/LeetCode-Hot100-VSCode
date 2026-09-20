@@ -70,6 +70,27 @@ export function sortWrongByReview(list: WrongEntry[]): WrongEntry[] {
     });
 }
 
+/**
+ * "开始复习"候选：按到期时间升序（到期的排最前）取第一个**今天还没复习过**的错题。
+ * 返回候选条目与统计（total=错题总数、reviewedCount=今日已复习数、dueRemaining=剩余到期数），
+ * reviewedSlugs 为今日已复习 slugs（跨日清理由调用方维护）
+ */
+export function pickReviewCandidate(
+    list: WrongEntry[],
+    reviewedSlugs: readonly string[],
+    now: number = Date.now()
+): { entry?: WrongEntry; total: number; reviewedCount: number; dueRemaining: number } {
+    const sorted = sortWrongByReview(list);
+    const reviewed = new Set(reviewedSlugs);
+    const entry = sorted.find(e => !reviewed.has(e.titleSlug));
+    return {
+        entry,
+        total: list.length,
+        reviewedCount: sorted.filter(e => reviewed.has(e.titleSlug)).length,
+        dueRemaining: sorted.filter(e => isReviewDue(e, now) && !reviewed.has(e.titleSlug)).length
+    };
+}
+
 /** 短时间格式：MM-DD HH:mm（无效时间返回空串） */
 export function formatFailedAt(ts: number): string {
     const d = new Date(ts);

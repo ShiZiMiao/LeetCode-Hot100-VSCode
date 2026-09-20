@@ -105,7 +105,7 @@
 			{
 				"command": "leetcode.randomProblem",
 				"title": "LeetCode: 随机抽题",
-				"icon": "$(shuffle)"
+				"icon": "$(sparkle)"
 			},
 			{
 				"command": "leetcode.dailyQuestion",
@@ -132,6 +132,10 @@
 				"command": "leetcode.openNote",
 				"title": "LeetCode: 打开题目笔记",
 				"icon": "$(note)"
+			},
+			{
+				"command": "leetcode.reviewWrong",
+				"title": "LeetCode: 复习错题（到期的优先）"
 			},
 			{
 				"command": "leetcode.clearWrongQueue",
@@ -260,6 +264,33 @@
 				"command": "leetcode.searchProblem",
 				"key": "ctrl+alt+f",
 				"mac": "cmd+alt+f"
+			},
+			{
+				"command": "leetcode.dailyQuestion",
+				"key": "ctrl+alt+d",
+				"mac": "cmd+alt+d"
+			},
+			{
+				"command": "leetcode.randomProblem",
+				"key": "ctrl+alt+r",
+				"mac": "cmd+alt+r"
+			},
+			{
+				"command": "leetcode.reviewWrong",
+				"key": "ctrl+alt+w",
+				"mac": "cmd+alt+w"
+			},
+			{
+				"command": "leetcode.openNote",
+				"key": "ctrl+alt+n",
+				"mac": "cmd+alt+n",
+				"when": "editorTextFocus && resourcePath =~ /leetcode/"
+			},
+			{
+				"command": "leetcode.toggleFavorite",
+				"key": "ctrl+alt+l",
+				"mac": "cmd+alt+l",
+				"when": "editorTextFocus && resourcePath =~ /leetcode/"
 			}
 		]
 	},
