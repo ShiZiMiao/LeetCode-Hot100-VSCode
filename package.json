@@ -1,322 +1,322 @@
 {
-  "name": "leetcode",
-  "publisher": "ShiZiMiao",
-  "displayName": "LeetCode Hot100 Pro",
-  "description": "在 VS Code 中一站式刷 LeetCode Hot 100：题目浏览、官方/社区题解、多语言编码、在线测试提交与本地调试。",
-  "version": "0.1.14",
-  "icon": "resources/hot100-pro.png",
-  "engines": {
-    "vscode": "^1.107.0",
-    "node": ">=20"
-  },
-  "categories": [
-    "Education",
-    "Programming Languages"
-  ],
-  "keywords": [
-    "leetcode",
-    "hot-100",
-    "algorithm",
-    "interview",
-    "刷题"
-  ],
-  "galleryBanner": {
-    "color": "#1A1A2E",
-    "theme": "dark"
-  },
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode.git"
-  },
-  "homepage": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode",
-  "bugs": {
-    "url": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode/issues"
-  },
-  "main": "./out/extension.js",
-  "contributes": {
-    "commands": [
-      {
-        "command": "leetcode.login",
-        "title": "LeetCode: 登录",
-        "icon": "$(account)"
-      },
-      {
-        "command": "leetcode.logout",
-        "title": "LeetCode: 退出登录"
-      },
-      {
-        "command": "leetcode.refreshList",
-        "title": "刷新列表",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "leetcode.submit",
-        "title": "LeetCode: 提交代码",
-        "icon": "$(cloud-upload)"
-      },
-      {
-        "command": "leetcode.test",
-        "title": "LeetCode: 运行测试",
-        "icon": "$(play)"
-      },
-      {
-        "command": "leetcode.debug",
-        "title": "LeetCode: 本地调试",
-        "icon": "$(debug-alt)"
-      },
-      {
-        "command": "leetcode.runDebug",
-        "title": "LeetCode: 运行当前文件",
-        "icon": "$(run)"
-      },
-      {
-        "command": "leetcode.viewSolution",
-        "title": "LeetCode: 查看题解",
-        "icon": "$(book)"
-      },
-      {
-        "command": "leetcode.showRawJudge",
-        "title": "LeetCode: 查看最近一次原始判题响应"
-      },
-      {
-        "command": "leetcode.debugFailedCase",
-        "title": "LeetCode: 用判题失败用例本地调试"
-      },
-      {
-        "command": "leetcode.customTest",
-        "title": "LeetCode: 用自定义用例测试",
-        "icon": "$(beaker)"
-      },
-      {
-        "command": "leetcode.setStatusFilter",
-        "title": "侧栏状态筛选：未做/已解决/尝试过"
-      },
-      {
-        "command": "leetcode.setGroupBy",
-        "title": "侧栏分组：按分类/按难度",
-        "icon": "$(list-ordered)"
-      },
-      {
-        "command": "leetcode.searchProblem",
-        "title": "LeetCode: 搜索题目（题号/标题/分类）",
-        "icon": "$(search)"
-      },
-      {
-        "command": "leetcode.randomProblem",
-        "title": "LeetCode: 随机抽题",
-        "icon": "$(sparkle)"
-      },
-      {
-        "command": "leetcode.dailyQuestion",
-        "title": "LeetCode: 每日一题"
-      },
-      {
-        "command": "leetcode.viewSubmissions",
-        "title": "LeetCode: 查看提交历史",
-        "description": "查看当前题最近 20 条提交，可把云端提交的代码恢复到本地（跨设备同步）"
-      },
-      {
-        "command": "leetcode.nextProblem",
-        "title": "LeetCode: 下一题"
-      },
-      {
-        "command": "leetcode.setDailyGoal",
-        "title": "LeetCode: 设置每日刷题目标"
-      },
-      {
-        "command": "leetcode.toggleFavorite",
-        "title": "LeetCode: 收藏/取消收藏题目（本地）",
-        "icon": "$(star)"
-      },
-      {
-        "command": "leetcode.openNote",
-        "title": "LeetCode: 打开题目笔记",
-        "icon": "$(note)"
-      },
-      {
-        "command": "leetcode.reviewWrong",
-        "title": "LeetCode: 复习错题（到期的优先）"
-      },
-      {
-        "command": "leetcode.clearWrongQueue",
-        "title": "清空错题回顾队列"
-      }
-    ],
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "leetcode-runner",
-          "title": "LeetCode Hot 100",
-          "icon": "$(code)"
-        }
-      ]
-    },
-    "views": {
-      "leetcode-runner": [
-        {
-          "id": "leetcode-hot100",
-          "name": "Hot 100",
-          "contextualTitle": "Hot 100 Questions",
-          "icon": "resources/leetcode.svg"
-        }
-      ]
-    },
-    "menus": {
-      "view/title": [
-        {
-          "command": "leetcode.login",
-          "group": "navigation@1",
-          "when": "view == leetcode-hot100"
-        },
-        {
-          "command": "leetcode.refreshList",
-          "group": "navigation@2",
-          "when": "view == leetcode-hot100"
-        },
-        {
-          "command": "leetcode.setGroupBy",
-          "group": "navigation@3",
-          "when": "view == leetcode-hot100"
-        },
-        {
-          "command": "leetcode.searchProblem",
-          "group": "navigation@4",
-          "when": "view == leetcode-hot100"
-        },
-        {
-          "command": "leetcode.randomProblem",
-          "group": "navigation@5",
-          "when": "view == leetcode-hot100"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "leetcode.openNote",
-          "group": "inline@1",
-          "when": "view == leetcode-hot100 && viewItem == question"
-        },
-        {
-          "command": "leetcode.toggleFavorite",
-          "group": "inline@2",
-          "when": "view == leetcode-hot100 && viewItem == question"
-        }
-      ],
-      "editor/title": [
-        {
-          "command": "leetcode.runDebug",
-          "group": "navigation@0",
-          "when": "resourcePath =~ /leetcode/ && !(resourcePath =~ /notes/)"
-        },
-        {
-          "command": "leetcode.debug",
-          "group": "navigation@1",
-          "when": "resourcePath =~ /leetcode/ && !(resourcePath =~ /notes/)"
-        },
-        {
-          "command": "leetcode.test",
-          "group": "navigation@2",
-          "when": "resourcePath =~ /leetcode/ && !(resourcePath =~ /notes/)"
-        },
-        {
-          "command": "leetcode.submit",
-          "group": "navigation@3",
-          "when": "resourcePath =~ /leetcode/ && !(resourcePath =~ /notes/)"
-        },
-        {
-          "command": "leetcode.customTest",
-          "group": "navigation@4",
-          "when": "resourcePath =~ /customcase_/"
-        }
-      ]
-    },
-    "configuration": {
-      "title": "LeetCode Hot100 Pro",
-      "properties": {
-        "leetcode.dailyGoal": {
-          "type": "number",
-          "default": 3,
-          "minimum": 1,
-          "maximum": 50,
-          "description": "每日刷题目标（每天提交通过的题数），侧栏刷题统计中展示今日进度"
-        }
-      }
-    },
-    "keybindings": [
-      {
-        "command": "leetcode.test",
-        "key": "ctrl+alt+t",
-        "mac": "cmd+alt+t",
-        "when": "editorTextFocus && resourcePath =~ /leetcode/"
-      },
-      {
-        "command": "leetcode.submit",
-        "key": "ctrl+alt+s",
-        "mac": "cmd+alt+s",
-        "when": "editorTextFocus && resourcePath =~ /leetcode/"
-      },
-      {
-        "command": "leetcode.nextProblem",
-        "key": "ctrl+alt+right",
-        "mac": "cmd+alt+right",
-        "when": "editorTextFocus && resourcePath =~ /leetcode/"
-      },
-      {
-        "command": "leetcode.searchProblem",
-        "key": "ctrl+alt+f",
-        "mac": "cmd+alt+f"
-      },
-      {
-        "command": "leetcode.dailyQuestion",
-        "key": "ctrl+alt+d",
-        "mac": "cmd+alt+d"
-      },
-      {
-        "command": "leetcode.randomProblem",
-        "key": "ctrl+alt+r",
-        "mac": "cmd+alt+r"
-      },
-      {
-        "command": "leetcode.reviewWrong",
-        "key": "ctrl+alt+w",
-        "mac": "cmd+alt+w"
-      },
-      {
-        "command": "leetcode.openNote",
-        "key": "ctrl+alt+n",
-        "mac": "cmd+alt+n",
-        "when": "editorTextFocus && resourcePath =~ /leetcode/"
-      },
-      {
-        "command": "leetcode.toggleFavorite",
-        "key": "ctrl+alt+l",
-        "mac": "cmd+alt+l",
-        "when": "editorTextFocus && resourcePath =~ /leetcode/"
-      }
-    ]
-  },
-  "scripts": {
-    "vscode:prepublish": "pnpm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "pretest": "pnpm run compile && pnpm run lint",
-    "lint": "eslint src",
-    "test": "vscode-test",
-    "test:unit": "node --test \"out/unit/*.unit.test.js\"",
-    "release": "node scripts/release.mjs"
-  },
-  "devDependencies": {
-    "@types/mocha": "^10.0.10",
-    "@types/node": "22.x",
-    "@types/vscode": "^1.107.0",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2",
-    "eslint": "^9.39.1",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.48.1"
-  },
-  "dependencies": {
-    "playwright-core": "1.63.0"
-  },
-  "packageManager": "pnpm@11.25.0"
+	"name": "leetcode",
+	"publisher": "ShiZiMiao",
+	"displayName": "LeetCode Hot100 Pro",
+	"description": "在 VS Code 中一站式刷 LeetCode Hot 100：题目浏览、官方/社区题解、多语言编码、在线测试提交与本地调试。",
+	"version": "0.1.15",
+	"icon": "resources/hot100-pro.png",
+	"engines": {
+		"vscode": "^1.107.0",
+		"node": ">=20"
+	},
+	"categories": [
+		"Education",
+		"Programming Languages"
+	],
+	"keywords": [
+		"leetcode",
+		"hot-100",
+		"algorithm",
+		"interview",
+		"刷题"
+	],
+	"galleryBanner": {
+		"color": "#1A1A2E",
+		"theme": "dark"
+	},
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode.git"
+	},
+	"homepage": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode",
+	"bugs": {
+		"url": "https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode/issues"
+	},
+	"main": "./out/extension.js",
+	"contributes": {
+		"commands": [
+			{
+				"command": "leetcode.login",
+				"title": "LeetCode: 登录",
+				"icon": "$(account)"
+			},
+			{
+				"command": "leetcode.logout",
+				"title": "LeetCode: 退出登录"
+			},
+			{
+				"command": "leetcode.refreshList",
+				"title": "刷新列表",
+				"icon": "$(refresh)"
+			},
+			{
+				"command": "leetcode.submit",
+				"title": "LeetCode: 提交代码",
+				"icon": "$(cloud-upload)"
+			},
+			{
+				"command": "leetcode.test",
+				"title": "LeetCode: 运行测试",
+				"icon": "$(play)"
+			},
+			{
+				"command": "leetcode.debug",
+				"title": "LeetCode: 本地调试",
+				"icon": "$(debug-alt)"
+			},
+			{
+				"command": "leetcode.runDebug",
+				"title": "LeetCode: 运行当前文件",
+				"icon": "$(run)"
+			},
+			{
+				"command": "leetcode.viewSolution",
+				"title": "LeetCode: 查看题解",
+				"icon": "$(book)"
+			},
+			{
+				"command": "leetcode.showRawJudge",
+				"title": "LeetCode: 查看最近一次原始判题响应"
+			},
+			{
+				"command": "leetcode.debugFailedCase",
+				"title": "LeetCode: 用判题失败用例本地调试"
+			},
+			{
+				"command": "leetcode.customTest",
+				"title": "LeetCode: 用自定义用例测试",
+				"icon": "$(beaker)"
+			},
+			{
+				"command": "leetcode.setStatusFilter",
+				"title": "侧栏状态筛选：未做/已解决/尝试过"
+			},
+			{
+				"command": "leetcode.setGroupBy",
+				"title": "侧栏分组：按分类/按难度",
+				"icon": "$(list-ordered)"
+			},
+			{
+				"command": "leetcode.searchProblem",
+				"title": "LeetCode: 搜索题目（题号/标题/分类）",
+				"icon": "$(search)"
+			},
+			{
+				"command": "leetcode.randomProblem",
+				"title": "LeetCode: 随机抽题",
+				"icon": "$(sparkle)"
+			},
+			{
+				"command": "leetcode.dailyQuestion",
+				"title": "LeetCode: 每日一题"
+			},
+			{
+				"command": "leetcode.viewSubmissions",
+				"title": "LeetCode: 查看提交历史",
+				"description": "查看当前题最近 20 条提交，可把云端提交的代码恢复到本地（跨设备同步）"
+			},
+			{
+				"command": "leetcode.nextProblem",
+				"title": "LeetCode: 下一题"
+			},
+			{
+				"command": "leetcode.setDailyGoal",
+				"title": "LeetCode: 设置每日刷题目标"
+			},
+			{
+				"command": "leetcode.toggleFavorite",
+				"title": "LeetCode: 收藏/取消收藏题目（本地）",
+				"icon": "$(star)"
+			},
+			{
+				"command": "leetcode.openNote",
+				"title": "LeetCode: 打开题目笔记",
+				"icon": "$(note)"
+			},
+			{
+				"command": "leetcode.reviewWrong",
+				"title": "LeetCode: 复习错题（到期的优先）"
+			},
+			{
+				"command": "leetcode.clearWrongQueue",
+				"title": "清空错题回顾队列"
+			}
+		],
+		"viewsContainers": {
+			"activitybar": [
+				{
+					"id": "leetcode-runner",
+					"title": "LeetCode Hot 100",
+					"icon": "$(code)"
+				}
+			]
+		},
+		"views": {
+			"leetcode-runner": [
+				{
+					"id": "leetcode-hot100",
+					"name": "Hot 100",
+					"contextualTitle": "Hot 100 Questions",
+					"icon": "resources/leetcode.svg"
+				}
+			]
+		},
+		"menus": {
+			"view/title": [
+				{
+					"command": "leetcode.login",
+					"group": "navigation@1",
+					"when": "view == leetcode-hot100"
+				},
+				{
+					"command": "leetcode.refreshList",
+					"group": "navigation@2",
+					"when": "view == leetcode-hot100"
+				},
+				{
+					"command": "leetcode.setGroupBy",
+					"group": "navigation@3",
+					"when": "view == leetcode-hot100"
+				},
+				{
+					"command": "leetcode.searchProblem",
+					"group": "navigation@4",
+					"when": "view == leetcode-hot100"
+				},
+				{
+					"command": "leetcode.randomProblem",
+					"group": "navigation@5",
+					"when": "view == leetcode-hot100"
+				}
+			],
+			"view/item/context": [
+				{
+					"command": "leetcode.openNote",
+					"group": "inline@1",
+					"when": "view == leetcode-hot100 && viewItem == question"
+				},
+				{
+					"command": "leetcode.toggleFavorite",
+					"group": "inline@2",
+					"when": "view == leetcode-hot100 && viewItem == question"
+				}
+			],
+			"editor/title": [
+				{
+					"command": "leetcode.runDebug",
+					"group": "navigation@0",
+					"when": "resourcePath =~ /leetcode/ && !(resourcePath =~ /notes/)"
+				},
+				{
+					"command": "leetcode.debug",
+					"group": "navigation@1",
+					"when": "resourcePath =~ /leetcode/ && !(resourcePath =~ /notes/)"
+				},
+				{
+					"command": "leetcode.test",
+					"group": "navigation@2",
+					"when": "resourcePath =~ /leetcode/ && !(resourcePath =~ /notes/)"
+				},
+				{
+					"command": "leetcode.submit",
+					"group": "navigation@3",
+					"when": "resourcePath =~ /leetcode/ && !(resourcePath =~ /notes/)"
+				},
+				{
+					"command": "leetcode.customTest",
+					"group": "navigation@4",
+					"when": "resourcePath =~ /customcase_/"
+				}
+			]
+		},
+		"configuration": {
+			"title": "LeetCode Hot100 Pro",
+			"properties": {
+				"leetcode.dailyGoal": {
+					"type": "number",
+					"default": 3,
+					"minimum": 1,
+					"maximum": 50,
+					"description": "每日刷题目标（每天提交通过的题数），侧栏刷题统计中展示今日进度"
+				}
+			}
+		},
+		"keybindings": [
+			{
+				"command": "leetcode.test",
+				"key": "ctrl+alt+t",
+				"mac": "cmd+alt+t",
+				"when": "editorTextFocus && resourcePath =~ /leetcode/"
+			},
+			{
+				"command": "leetcode.submit",
+				"key": "ctrl+alt+s",
+				"mac": "cmd+alt+s",
+				"when": "editorTextFocus && resourcePath =~ /leetcode/"
+			},
+			{
+				"command": "leetcode.nextProblem",
+				"key": "ctrl+alt+right",
+				"mac": "cmd+alt+right",
+				"when": "editorTextFocus && resourcePath =~ /leetcode/"
+			},
+			{
+				"command": "leetcode.searchProblem",
+				"key": "ctrl+alt+f",
+				"mac": "cmd+alt+f"
+			},
+			{
+				"command": "leetcode.dailyQuestion",
+				"key": "ctrl+alt+d",
+				"mac": "cmd+alt+d"
+			},
+			{
+				"command": "leetcode.randomProblem",
+				"key": "ctrl+alt+r",
+				"mac": "cmd+alt+r"
+			},
+			{
+				"command": "leetcode.reviewWrong",
+				"key": "ctrl+alt+w",
+				"mac": "cmd+alt+w"
+			},
+			{
+				"command": "leetcode.openNote",
+				"key": "ctrl+alt+n",
+				"mac": "cmd+alt+n",
+				"when": "editorTextFocus && resourcePath =~ /leetcode/"
+			},
+			{
+				"command": "leetcode.toggleFavorite",
+				"key": "ctrl+alt+l",
+				"mac": "cmd+alt+l",
+				"when": "editorTextFocus && resourcePath =~ /leetcode/"
+			}
+		]
+	},
+	"scripts": {
+		"vscode:prepublish": "pnpm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"pretest": "pnpm run compile && pnpm run lint",
+		"lint": "eslint src",
+		"test": "vscode-test",
+		"test:unit": "node --test \"out/unit/*.unit.test.js\"",
+		"release": "node scripts/release.mjs"
+	},
+	"devDependencies": {
+		"@types/mocha": "^10.0.10",
+		"@types/node": "22.x",
+		"@types/vscode": "^1.107.0",
+		"@vscode/test-cli": "^0.0.12",
+		"@vscode/test-electron": "^2.5.2",
+		"eslint": "^9.39.1",
+		"typescript": "^5.9.3",
+		"typescript-eslint": "^8.48.1"
+	},
+	"dependencies": {
+		"playwright-core": "1.63.0"
+	},
+	"packageManager": "pnpm@11.25.0"
 }
