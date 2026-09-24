@@ -3,7 +3,41 @@
  * 从 extension.ts 抽出：状态中文映射、判题值格式化、逐用例分组、报告组装。
  */
 
-export const STATUS_ZH: Record<string, string> = {
+/**
+ * 判题响应的最小结构（字段可选，接口字段多于实际消费项）。
+ * 用最小接口替代 any：判题响应来自 GraphQL_check/submit 的动态 JSON，
+ * 只声明本模块消费到的字段，未知字段经索引签名容忍。
+ */
+export interface JudgeCheck {
+    /** 轮询状态（'SUCCESS' 为判题完成） */
+    state?: string;
+    /** runCode 是否运行成功 / 输出与预期是否一致 */
+    run_success?: boolean;
+    correct_answer?: boolean;
+    status_msg?: string;
+    total_correct?: number | string;
+    total_testcases?: number | string;
+    code_answer?: unknown[];
+    coded_answer?: unknown[];
+    expected_code_answer?: unknown;
+    expected_output?: unknown;
+    compare_result?: string;
+    input?: unknown;
+    last_testcase?: unknown;
+    test_case?: unknown;
+    code_output?: string;
+    total_output?: string;
+    status_runtime?: string;
+    status_memory?: string;
+    memory?: number;
+    full_compile_error?: string;
+    compile_error?: string;
+    full_runtime_error?: string;
+    error?: string;
+    [key: string]: unknown;
+}
+
+const STATUS_ZH: Record<string, string> = {
     'Accepted': '通过',
     'Wrong Answer': '解答错误',
     'Time Limit Exceeded': '超出时间限制',
@@ -13,7 +47,7 @@ export const STATUS_ZH: Record<string, string> = {
     'Compile Error': '编译错误'
 };
 
-export function formatJudgeValue(value: any): string {
+export function formatJudgeValue(value: unknown): string {
     if (value === undefined || value === null) { return ''; }
     // runCode 的 code_answer/expected_code_answer 每项自带结尾换行、数组还常以空串收尾，
     // 逐项去尾后拼接仍可能带结尾 \n（join 在空串前插入的分隔符），必须整串再去一次尾，
@@ -30,9 +64,9 @@ export function formatJudgeValue(value: any): string {
  * 判题数组（code_answer/expected_code_answer）与 total_testcases 对齐：
  * 判题数组常在末尾多一个空串，长度为 用例数+1 时去掉再对齐。
  */
-function alignCaseArrays(outputs: any[], expects: any[], n: number): { outArr: any[]; expArr: any[] } | undefined {
-    const align = (arr: any[]) => arr.length === n
-        ? arr
+function alignCaseArrays(outputs: readonly unknown[], expects: readonly unknown[], n: number): { outArr: unknown[]; expArr: unknown[] } | undefined {
+    const align = (arr: readonly unknown[]): unknown[] | undefined => arr.length === n
+        ? [...arr]
         : (arr.length === n + 1 && String(arr[arr.length - 1]).trim() === '' ? arr.slice(0, n) : undefined);
     const outArr = align(outputs);
     const expArr = align(expects);
@@ -64,7 +98,7 @@ function splitCaseInputs(inputText: string, n: number): string[][] | undefined {
  * 输入原始串的行数若能被用例数整除即按此分组（多参数题每个参数占一行，每用例 = 参数个数行）。
  * 任一前提不满足（如提交判题只有拼接后的 total_output 字符串）返回 undefined，调用方回退汇总格式。
  */
-export function buildCaseSections(check: any, inputText: string): string[] | undefined {
+export function buildCaseSections(check: JudgeCheck, inputText: string): string[] | undefined {
     const outputs = check.code_answer ?? check.coded_answer;
     const expects = Array.isArray(check.expected_code_answer) ? check.expected_code_answer : check.expected_output;
     const n = Number(check.total_testcases) || 0;
@@ -117,7 +151,7 @@ export interface JudgeCaseInfo {
  * - runCode 测试：按 code_answer/expected_code_answer 数组 + compare_result + 行数均分还原；
  * - 提交等无逐用例数组的场景：Accepted 无失败用例返回 []；未通过时回退单条（input/output/expected）。
  */
-export function collectJudgeCaseInfos(check: any, inputFallback?: string): JudgeCaseInfo[] {
+export function collectJudgeCaseInfos(check: JudgeCheck, inputFallback?: string): JudgeCaseInfo[] {
     const inputText = formatJudgeValue(pickFirst(check.input, check.last_testcase, check.test_case)) || formatJudgeValue(inputFallback);
     const outputs = check.code_answer ?? check.coded_answer;
     const expects = Array.isArray(check.expected_code_answer) ? check.expected_code_answer : check.expected_output;
@@ -130,8 +164,9 @@ export function collectJudgeCaseInfos(check: any, inputFallback?: string): Judge
         const { outArr, expArr } = aligned;
         const inputLines = splitCaseInputs(inputText, n);
         // compare_result 仅由 0/1 组成时才可信
-        const compareValid = typeof check.compare_result === 'string' && /^[01]*$/.test(check.compare_result);
-        const compare = compareValid ? check.compare_result : '';
+        const compareRaw = typeof check.compare_result === 'string' ? check.compare_result : '';
+        const compareValid = /^[01]*$/.test(compareRaw);
+        const compare = compareValid ? compareRaw : '';
         const infos: JudgeCaseInfo[] = [];
         for (let i = 0; i < n; i++) {
             infos.push({
@@ -158,11 +193,11 @@ export function collectJudgeCaseInfos(check: any, inputFallback?: string): Judge
 }
 
 /** 依序取第一个非空值（?? 不跳过空串——提交判题 code_output 常为 ""，真输出在 total_output） */
-function pickFirst(...vals: any[]): any {
+function pickFirst(...vals: unknown[]): unknown {
     return vals.find(v => v !== undefined && v !== null && v !== '');
 }
 
-export function buildJudgeReport(check: any, inputFallback?: string, ok?: boolean): { summary: string; detail: string } {
+export function buildJudgeReport(check: JudgeCheck, inputFallback?: string, ok?: boolean): { summary: string; detail: string } {
     const status = String(check.status_msg || '');
     const statusLabel = STATUS_ZH[status] ? `${STATUS_ZH[status]} (${status})` : (status || '未知状态');
     const passed = (check.total_correct !== undefined && check.total_testcases !== undefined)

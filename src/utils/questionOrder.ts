@@ -4,7 +4,7 @@
  */
 
 import { Hot100Question, CATEGORIES } from '../data/hot100Data';
-import { buildDifficultyGroups, isDifficultyLevel } from './difficultyGroups';
+import { DIFFICULTY_ORDER, byFrontendQuestionIdAsc, isDifficultyLevel } from './difficultyGroups';
 
 /** 侧栏分组方式：按分类（官网默认）/ 按难度（简单→中等→困难，组内按题号升序） */
 export type GroupByMode = 'category' | 'difficulty';
@@ -16,12 +16,13 @@ export type GroupByMode = 'category' | 'difficulty';
  */
 export function orderedQuestions(questions: Hot100Question[], mode: GroupByMode): Hot100Question[] {
     if (mode === 'difficulty') {
-        return buildDifficultyGroups(
-            questions,
-            q => (isDifficultyLevel(q.difficulty) ? q.difficulty : undefined),
-            () => null,
-            'all'
-        ).flatMap(g => g.questions);
+        // 与 buildDifficultyGroups 同一排序语义（难度非法不入组、组内题号升序），
+        // 直接复用其组序与比较器，不再借用状态筛选接口传假实参
+        return DIFFICULTY_ORDER.flatMap(level =>
+            questions
+                .filter(q => isDifficultyLevel(q.difficulty) && q.difficulty === level)
+                .sort(byFrontendQuestionIdAsc)
+        );
     }
     return CATEGORIES.flatMap(category => questions.filter(q => q.category === category));
 }

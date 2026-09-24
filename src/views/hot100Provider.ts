@@ -11,6 +11,7 @@ import { computeProgressStats, progressPercent, matchesStatusFilter, ProgressSta
 import { WrongEntry, addWrongEntry, removeWrongEntry, formatFailedAt, failureCountOf, nextReviewAt, isReviewDue, sortWrongByReview } from '../utils/wrongQueue';
 import { DifficultyLevel, DIFFICULTY_LABELS, DIFFICULTY_ZH, buildDifficultyGroups, isDifficultyLevel } from '../utils/difficultyGroups';
 import { computeStudyStats, localDateStr, StudyStats } from '../utils/studyStats';
+import { pickDailyQuestion } from '../utils/dailyQuestion';
 import { GroupByMode, orderedQuestions } from '../utils/questionOrder';
 import { formatAcRate } from '../utils/metaFormat';
 
@@ -25,7 +26,7 @@ const SOLVED_DATES_KEY = 'hot100SolvedDates';
 const FAVORITES_KEY = 'hot100Favorites';
 
 /** 列表接口下发的题目元数据（展示用；仅保留实际消费的字段） */
-export interface QuestionMeta {
+interface QuestionMeta {
     paidOnly: boolean;
     acRate?: number;
 }
@@ -38,11 +39,12 @@ function dailyGoal(): number {
     return Number.isInteger(v) && v > 0 ? v : DEFAULT_DAILY_GOAL;
 }
 
-// frontendQuestionId → titleSlug 反向映射（用于判题结果按 slug 更新本地状态）
+// titleSlug → frontendQuestionId 映射（用于判题结果按 slug 更新本地状态）
 const SLUG_TO_ID: Map<string, string> = new Map(
     [...ID_TO_SLUG.entries()].map(([id, slug]) => [slug, id] as [string, string])
 );
 
+/** 状态归一化：宽入参是有意为之（globalState 历史值/接口脏数据统一按未做处理，有单测覆盖） */
 function statusOf(status: QuestionStatus | string | null | undefined): QuestionStatus {
     return status === 'ac' ? 'ac' : status === 'notac' ? 'notac' : null;
 }
@@ -61,6 +63,10 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
     // 存储题目难度（从API获取：EASY/MEDIUM/HARD）
     private questionDifficultyMap: Map<string, string> = new Map();
     private isLoaded: boolean = false;
+    // 首次加载的 in-flight Promise（并发 getChildren 复用，避免各自重复拉全部分页）
+    private loading?: Promise<void>;
+    // 加载世代号：refresh() 递增；晚到的加载结果世代不匹配直接丢弃（否则写回过期状态）
+    private loadGeneration = 0;
     private filter: StatusFilter = 'all';
     private groupBy: GroupByMode = 'category';
     private wrongList: WrongEntry[] = [];
@@ -74,10 +80,14 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
     constructor(leetCodeApi: LeetCodeApi, store?: vscode.Memento) {
         this.leetCodeApi = leetCodeApi;
         this.store = store;
-        const cached = store?.get<WrongEntry[]>(WRONG_STORE_KEY, []);
-        if (Array.isArray(cached)) {
-            this.wrongList = cached;
-        }
+const cached = store?.get<WrongEntry[]>(WRONG_STORE_KEY, []);
+		if (Array.isArray(cached)) {
+			// 历史遗留的非 Hot 100 条目（旧版本每日一题/外部文件判题进入）直接清除并同步持久化
+			this.wrongList = cached.filter(w => w && typeof w.titleSlug === 'string' && SLUG_TO_ID.has(w.titleSlug));
+			if (this.wrongList.length !== cached.length) {
+				store?.update(WRONG_STORE_KEY, this.wrongList);
+			}
+		}
         const cachedDates = store?.get<string[]>(SOLVED_DATES_KEY, []);
         if (Array.isArray(cachedDates)) {
             this.solvedDates = new Set(cachedDates.filter(d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)));
@@ -120,6 +130,8 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
     }
 
     refresh(): void {
+        this.loadGeneration++;
+        this.loading = undefined;
         this.isLoaded = false;
         this.questionStatusMap.clear();
         this.questionDifficultyMap.clear();
@@ -141,7 +153,9 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
 /**
 	 * 判题结果接入：更新题目状态（测试/提交均算"尝试过"，提交通过算"已解决"；
 	 * 已解决不会被测试结果降级）。recordWrong=true 时维护错题回顾队列
-	 * （提交失败入队、通过自动移出；测试失败不记队列）
+	 * （提交失败入队、通过自动移出；测试失败不记队列）。
+	 * 非 Hot 100 题（外部文件解析而来）保留通用判题流程，但侧栏的错题队列、
+	 * 打卡/每日目标统计等 Hot 100 专属功能不记录它。
 	 */
 	recordJudgeResult(titleSlug: string, opts: { solved: boolean; reason?: string; recordWrong?: boolean }): void {
 		const id = SLUG_TO_ID.get(titleSlug);
@@ -156,13 +170,16 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
 				failedAt: Date.now(),
 				reason: opts.reason || '未通过'
 			};
-			this.wrongList = opts.solved
-				? removeWrongEntry(this.wrongList, titleSlug)
-				: addWrongEntry(this.wrongList, entry);
+			// 通过时无条件移出（含历史遗留的非 Hot 100 旧条目）；失败仅 Hot 100 入队
+			if (opts.solved) {
+				this.wrongList = removeWrongEntry(this.wrongList, titleSlug);
+			} else if (id) {
+				this.wrongList = addWrongEntry(this.wrongList, entry);
+			}
 			this.store?.update(WRONG_STORE_KEY, this.wrongList);
 		}
-		// 提交通过当日打卡：连续打卡/每日目标进度依赖此集合
-		if (opts.solved) {
+		// 提交通过当日打卡：连续打卡/每日目标进度依赖此集合（仅 Hot 100）
+		if (opts.solved && id) {
 			this.solvedDates.add(localDateStr());
 			this.store?.update(SOLVED_DATES_KEY, [...this.solvedDates]);
 		}
@@ -183,10 +200,18 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
     }
 
     async getChildren(element?: TreeNode): Promise<TreeNode[]> {
-        // 如果还没有加载过，先从API获取题目状态
+        // 首次加载题目状态（并发展开多节点时复用同一个 in-flight 请求）
         if (!this.isLoaded) {
-            await this.loadQuestionStatus();
-            this.isLoaded = true;
+            if (!this.loading) {
+                const gen = this.loadGeneration;
+                const p = this.loadQuestionStatus(gen).finally(() => {
+                    if (this.loading === p) {
+                        this.loading = undefined;
+                    }
+                });
+                this.loading = p;
+            }
+            await this.loading;
         }
 
         // 顶层：进度 + 刷题统计 + 错题回顾 + 分类（或难度分组）
@@ -194,7 +219,7 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
             const totalStats = computeProgressStats(
                 HOT_100_LIST.map(q => statusOf(this.questionStatusMap.get(q.frontendQuestionId)))
             );
-            const nodes: TreeNode[] = [new ProgressItem(totalStats, this.filter), new StatsItem(), new DailyItem()];
+            const nodes: TreeNode[] = [new ProgressItem(totalStats, this.filter), new StatsItem(), new DailyItem(pickDailyQuestion(localDateStr()))];
             if (this.wrongList.length > 0) {
                 nodes.push(new WrongCategoryItem(this.wrongList.length));
             }
@@ -212,7 +237,7 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
                 }
                 return nodes;
             }
-            for (const [index, category] of CATEGORIES.entries()) {
+            for (const category of CATEGORIES) {
                 const categoryQuestions = HOT_100_LIST.filter(
                     q => q.category === category && matchesStatusFilter(statusOf(this.questionStatusMap.get(q.frontendQuestionId)), this.filter)
                 );
@@ -221,7 +246,7 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
                     continue;
                 }
                 const catStats = computeProgressStats(categoryQuestions.map(q => statusOf(this.questionStatusMap.get(q.frontendQuestionId))));
-                nodes.push(new CategoryItem(category, categoryQuestions.length, catStats.solved, index));
+                nodes.push(new CategoryItem(category, categoryQuestions.length, catStats.solved));
             }
             return nodes;
         }
@@ -236,10 +261,11 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
             return this.buildStatsRows();
         }
 
-        // 我的收藏：按当前分组顺序排列
+        // 我的收藏：按当前分组顺序排列（状态筛选与分类/难度分组一致）
         if (element instanceof FavoriteItem) {
             return orderedQuestions(HOT_100_LIST, this.groupBy)
-                .filter(q => this.isFavorite(q.frontendQuestionId))
+                .filter(q => this.isFavorite(q.frontendQuestionId)
+                    && matchesStatusFilter(statusOf(this.questionStatusMap.get(q.frontendQuestionId)), this.filter))
                 .map(q => this.toQuestionItem(q));
         }
 
@@ -355,12 +381,16 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
     }
 
     /**
-     * 从API加载题目状态（已完成/未完成等）
+     * 从API加载题目状态（已完成/未完成等）。gen 为发起时的世代号：
+     * 加载期间若发生 refresh()（世代已递增），晚到结果直接丢弃，避免过期状态写回并标记已加载。
      */
-    private async loadQuestionStatus(): Promise<void> {
+    private async loadQuestionStatus(gen: number): Promise<void> {
         try {
             // 获取足够多的题目以覆盖所有Hot 100
             const allQuestions = await this.leetCodeApi.getHot100Problems();
+            if (gen !== this.loadGeneration) {
+                return;
+            }
 
             // 构建状态映射
             for (const q of allQuestions) {
@@ -382,7 +412,14 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
                 }
             }
         } catch (error) {
-            vscode.window.showErrorMessage(`加载题目状态失败: ${error instanceof Error ? error.message : String(error)}`);
+            if (gen === this.loadGeneration) {
+                vscode.window.showErrorMessage(`加载题目状态失败: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        } finally {
+            if (gen === this.loadGeneration) {
+                // 失败也标记已加载（错误已提示），避免每次展开树都重复整表拉取；refresh() 可重试
+                this.isLoaded = true;
+            }
         }
     }
 }
@@ -462,8 +499,7 @@ export class CategoryItem extends vscode.TreeItem {
     constructor(
         public readonly category: string,
         public readonly questionCount: number,
-        public readonly solvedCount: number,
-        public readonly index: number
+        public readonly solvedCount: number
     ) {
         super(category, vscode.TreeItemCollapsibleState.Collapsed);
 
@@ -529,12 +565,20 @@ export class StatsRowItem extends vscode.TreeItem {
 }
 
 /**
- * 每日一题入口节点（点击直达官网今日题目，可能不在 Hot 100 内）
+ * 每日一题入口节点（按日期从 Hot 100 中随机抽取，每天固定一题）
  */
 export class DailyItem extends vscode.TreeItem {
-    constructor() {
-        super('📅 今日每日一题', vscode.TreeItemCollapsibleState.None);
-        this.tooltip = '打开 LeetCode 官网每日一题（可能不在 Hot 100 内，题面/判题/题解流程通用）';
+    constructor(question?: Hot100Question) {
+        super(
+            question
+                ? `📅 今日每日一题：${question.frontendQuestionId}. ${question.titleCn}`
+                : '📅 今日每日一题',
+            vscode.TreeItemCollapsibleState.None
+        );
+        const diffZh = question ? (isDifficultyLevel(question.difficulty) ? DIFFICULTY_ZH[question.difficulty] : '') : '';
+        this.tooltip = question
+            ? `${question.titleEn}（${diffZh}）\n从 Hot 100 中按日期随机抽取，每天固定一题（Ctrl+Alt+D）`
+            : '从 Hot 100 中按日期随机抽取，每天固定一题（Ctrl+Alt+D）';
         this.iconPath = new vscode.ThemeIcon('calendar');
         this.command = { command: 'leetcode.dailyQuestion', title: '每日一题' };
         this.contextValue = 'daily';
@@ -558,7 +602,6 @@ export class FavoriteItem extends vscode.TreeItem {
  */
 export class QuestionItem extends vscode.TreeItem {
     public readonly question: Question;
-    public readonly meta: QuestionMeta & { isFavorite?: boolean };
 
     constructor(
         hot100Question: Hot100Question,
@@ -574,7 +617,6 @@ export class QuestionItem extends vscode.TreeItem {
         const marks = `${meta.paidOnly ? '🔒' : ''}${meta.isFavorite ? '⭐' : ''}`;
         const label = `${marks}[${hot100Question.frontendQuestionId}${tag ? ' · ' + tag : ''}] ${hot100Question.titleCn}`;
         super(label, vscode.TreeItemCollapsibleState.None);
-        this.meta = meta;
 
         // 构建Question对象
         this.question = {

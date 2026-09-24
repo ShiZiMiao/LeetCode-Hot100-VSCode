@@ -3,22 +3,23 @@
  */
 
 import * as vscode from 'vscode';
-import { buildJudgeReport, collectJudgeCaseInfos, JudgeCaseInfo } from './utils/judgeReport';
+import { buildJudgeReport, collectJudgeCaseInfos, JudgeCaseInfo, JudgeCheck } from './utils/judgeReport';
 import { LeetCodeApi } from './core/leetcodeApi';
+import { isTransientNetworkError } from './utils/networkRetry';
 
 const errorDiagnostics = vscode.languages.createDiagnosticCollection('leetcode');
 
-function showCodeError(fileUri: vscode.Uri, fullMessage: string): number | null {
+function showCodeError(fileUri: vscode.Uri, fullMessage: string): void {
 	// Python 格式: "Line 5 in groupAnagrams (Solution.py)"；Java/JS 格式: "Solution.java:5" 或 "Solution.js:5:9"
 	let lineNumber: number | null = null;
 	const pyMatch = fullMessage.match(/Line\s+(\d+)/i);
-	// C++/Java/JS 等文件名:行号[:列] 格式；行号后可能跟 "error:" 等后缀（如 main.cpp:3:5: error:），
-	// 不再要求匹配到行尾
-	const colonMatch = fullMessage.match(/:(\d+)(?::\d+)?(?=\s|:|\)|$)/m);
+	// C++/Java/JS 等 文件名:行号[:列] 格式（行号后可跟 "error:" 等后缀，如 main.cpp:3:5: error:）。
+	// 必须要求文件名前缀：裸 "冒号+数字"（时间 12:30、示例 1:2 等）不是行号，会把诊断标到错误行
+	const colonMatch = fullMessage.match(/(?:^|[\s("'`])([\w.-]+\.[A-Za-z]{1,5}):(\d+)(?::\d+)?/m);
 	if (pyMatch) {
 		lineNumber = parseInt(pyMatch[1], 10);
 	} else if (colonMatch) {
-		lineNumber = parseInt(colonMatch[1], 10);
+		lineNumber = parseInt(colonMatch[2], 10);
 	}
 
 	const lineIdx = lineNumber && lineNumber >= 1 ? lineNumber - 1 : 0;
@@ -28,12 +29,17 @@ function showCodeError(fileUri: vscode.Uri, fullMessage: string): number | null 
 		vscode.DiagnosticSeverity.Error
 	);
 	errorDiagnostics.set(fileUri, [diagnostic]);
-	return lineNumber;
 }
 
 const judgeOutputChannel = vscode.window.createOutputChannel('LeetCode 判题结果');
 
 const judgeStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 99);
+// 状态栏点击/悬停语义归属本模块（勿在外部模块加载期改写）
+judgeStatusBar.command = 'leetcode.showRawJudge';
+judgeStatusBar.tooltip = 'LeetCode 判题进行中（点击查看最近一次原始判题响应）';
+
+/** 判题轮询预算（超时提示文案共用此来源） */
+export const JUDGE_POLL_BUDGET_MS = 90000;
 
 let judgeInFlight = false;
 
@@ -46,18 +52,27 @@ export function tryBeginJudge(): boolean {
 	return true;
 }
 
-export async function pollJudgeResult(api: LeetCodeApi, judgeId: string): Promise<any | undefined> {
-	const budgetMs = 90000;
+export async function pollJudgeResult(api: LeetCodeApi, judgeId: string): Promise<JudgeCheck | undefined> {
 	let waited = 0;
 	let delay = 1000;
 	judgeStatusBar.text = '$(sync~spin) LeetCode 判题中…';
 	judgeStatusBar.show();
 	try {
-		while (waited < budgetMs) {
+		while (waited < JUDGE_POLL_BUDGET_MS) {
 			await new Promise(resolve => setTimeout(resolve, delay));
 			waited += delay;
 			judgeStatusBar.text = `$(sync~spin) LeetCode 判题中… ${Math.round(waited / 1000)}s`;
-			const check = await api.checkSubmission(judgeId);
+			let check: JudgeCheck;
+			try {
+				check = await api.checkSubmission(judgeId) as JudgeCheck;
+			} catch (e) {
+				// 瞬时网络故障（代理瞬断等）不放弃整个轮询：服务端判题可能仍在进行，
+				// 跳过本轮继续退避轮询；非瞬断错误照常抛出
+				if (!isTransientNetworkError(e)) {
+					throw e;
+				}
+				continue;
+			}
 			if (check.state === 'SUCCESS') {
 				return check;
 			}
@@ -96,7 +111,7 @@ export async function showRawJudgeResponse(): Promise<void> {
 
 export function reportJudgeResult(
 	kind: '测试' | '提交' | '自定义用例',
-	check: any,
+	check: JudgeCheck,
 	opts: { ok: boolean; fileUri: vscode.Uri; inputFallback?: string; submissionUrl?: string; titleSlug?: string }
 ): void {
 	const report = buildJudgeReport(check, opts.inputFallback, opts.ok);

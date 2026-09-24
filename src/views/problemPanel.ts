@@ -9,7 +9,7 @@ import * as path from 'path';
 import * as vm from 'vm';
 import { createHash } from 'crypto';
 import { LeetCodeApi } from '../core/leetcodeApi';
-import { escapeHtml, formatArticleDate } from '../utils/htmlUtil';
+import { escapeHtml } from '../utils/htmlUtil';
 import { parseSimilarQuestions, difficultyZhOf } from '../utils/similarQuestions';
 
 export function sanitizeSolutionContent(content: string): string {
@@ -17,6 +17,22 @@ export function sanitizeSolutionContent(content: string): string {
 		return content;
 	}
 	return content.replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '');
+}
+
+/**
+ * 题面/远程 HTML 安全消毒（题面是 LeetCode 下发的原始 HTML，webview 内有 postMessage 桥）：
+ * 剥 script/iframe/object/embed 标签、on* 事件属性与 javascript: 伪协议。
+ * 渲染管线（renderMarkdownToHtml）内文本已统一 escapeHtml，此处兜住"原始 HTML 直通"路径。
+ */
+function sanitizeUnsafeHtml(html: string): string {
+	if (!html) {
+		return html;
+	}
+	return html
+		.replace(/<(script|iframe|object|embed)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+		.replace(/<(script|iframe|object|embed)\b[^>]*\/?>/gi, '')
+		.replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+		.replace(/(href|src)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, '$1="#"');
 }
 
 export async function localizeContentImages(html: string, panel: vscode.WebviewPanel, context: vscode.ExtensionContext, api: LeetCodeApi): Promise<string> {
@@ -123,7 +139,7 @@ function htmlToMarkdown(content: string): string {
 	s = s.replace(/<img[^>]*src="([^"]*)"[^>]*>/gi, '![]($1)');
 	s = s.replace(/<a[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
 	s = s.replace(/<\/h([1-6])>/gi, '\n\n');
-	s = s.replace(/<h([1-6])[^>]*>/gi, (m, n) => '\n\n' + '#'.repeat(Number(n)) + ' ');
+	s = s.replace(/<h([1-6])[^>]*>/gi, (_m, n) => '\n\n' + '#'.repeat(Number(n)) + ' ');
 	s = s.replace(/<(\/?)strong[^>]*>/gi, '**');
 	s = s.replace(/<(\/?)b[^>]*>/gi, '**');
 	s = s.replace(/<(\/?)em[^>]*>/gi, '*');
@@ -148,15 +164,19 @@ interface MarkdownCodeBlock {
 	code: string;
 }
 
-function codeLangPriority(lang: string): number {
+/** 语言优先级（单一来源，标签页排序与"优先语言"选择共用）：Python → C/C++ → Java → 其他 */
+function codeLangOrder(lang: string): number {
 	const l = lang.toLowerCase().replace(/\s+/g, '');
-	if (l === 'python3' || l === 'python') {
+	if (l === 'python3' || l === 'python' || l === 'py') {
 		return 0;
 	}
 	if (l === 'c' || l === 'c++' || l === 'cpp') {
 		return 1;
 	}
-	return 2;
+	if (l === 'java') {
+		return 2;
+	}
+	return 3;
 }
 
 function displayLangName(lang: string): string {
@@ -183,36 +203,38 @@ function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 	// 或旧格式 ![1200](url),![1200](url),...（alt=该帧停留毫秒数）；包裹符残留的 >
 	// 经 escapeHtml 后为 &gt;。渲染为与官网一致的帧播放器（黑条控件：播放/暂停、
 	// 上一帧、下一帧、页码），帧增删由 webview 脚本按 data-interval 轮播
-	s = s.replace(/!\[([^\]\s(),]+)\]\(([^)\s]+)\)(?:,!\[([^\]\s(),]+)\]\(([^)\s]+)\))+&gt;?/g, (m) => {
-		const frames = m.replace(/&gt;?$/, '').split(',').map((seg) => {
+	s = s.replace(/!\[([^\]\s(),]+)\]\(([^)\s]+)\)(?:,!\[([^\]\s(),]+)\]\(([^)\s]+)\))+&gt;/g, (m) => {
+		const frames = m.replace(/&gt;$/, '').split(',').map((seg) => {
 			const fm = seg.match(/!\[([^\]\s(),]+)\]\(([^)\s]+)\)/);
 			// alt 为 figN 等非数字时取默认间隔 1200ms（旧格式 alt 是停留毫秒数）
 			return { ms: Number(fm![1]) || 1200, url: fm![2] };
 		});
 		const interval = frames[0].ms || 1200;
-		return `<span class="lc-anim" data-interval="${interval}" data-frames="${frames.map(f => escapeHtml(f.url)).join('|')}">`
-			+ `<span class="lc-anim-stage"><img src="${escapeHtml(frames[0].url)}" alt="" loading="lazy" /></span>`
+		// 帧 URL 已在入口统一 escapeHtml：此处直接使用，二次转义会把 & 变成 &amp;amp;，
+		// 带查询参数的帧地址在 webview 中会解析错误
+		return `<span class="lc-anim" data-interval="${interval}" data-frames="${frames.map(f => f.url).join('|')}">`
+			+ `<span class="lc-anim-stage"><img src="${frames[0].url}" alt="" loading="lazy" /></span>`
 			+ `<span class="lc-anim-bar"><button class="lc-anim-play" title="播放/暂停">▶</button>`
 			+ `<span class="lc-anim-nav"><button class="lc-anim-prev" title="上一帧">◀</button>`
 			+ `<span class="lc-anim-page">1 / ${frames.length}</span>`
 			+ `<button class="lc-anim-next" title="下一帧">▶</button></span></span></span>`;
 	});
-	s = s.replace(/!\[([^\]]*\.(?:mp4|webm))\]\(([^)\s]+)\)/gi, (m, alt, url) => {
+	s = s.replace(/!\[([^\]]*\.(?:mp4|webm))\]\(([^)\s]+)\)/gi, (_m, alt, url) => {
 		if (videoPageUrl) {
 			// 视频题解：uuid 为阿里云 VOD 视频标识，点击后由扩展端查询 playAuth 播放凭证，
-			// 再用 Aliplayer 内嵌播放；失败时降级为浏览器播放入口
+			// 再用 Aliplayer 内嵌播放；失败时降级为浏览器播放入口（交互走统一 click 委托）
 			const uuid = url.replace(/\.(mp4|webm)$/i, '');
-			return `<button class="video-link" data-play-uuid="${uuid}" data-page-url="${videoPageUrl}" onclick="playArticleVideo(this)">🎬 播放视频题解</button>`;
+			return `<button class="video-link" data-play-uuid="${uuid}" data-page-url="${escapeHtml(videoPageUrl)}">🎬 播放视频题解</button>`;
 		}
 		return `<span class="img-placeholder">[视频：${alt}]</span>`;
 	});
-	s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m, alt, url) => {
+	s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, url) => {
 		if (/^https?:\/\//i.test(url)) {
 			return `<img src="${url}" alt="${alt}" />`;
 		}
 		return `<span class="img-placeholder">[图片：${alt || 'media'}]</span>`;
 	});
-	s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, text, url) => {
+	s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, text, url) => {
 		if (/^https?:\/\//i.test(url)) {
 			return `<a href="${url}">${text}</a>`;
 		}
@@ -241,7 +263,7 @@ function renderCodeBlockHtml(block: MarkdownCodeBlock): string {
 		}
 	}
 	// 主题配色由 CSS @media (prefers-color-scheme) 自动跟随 VS Code 主题，渲染侧不固化任何主题类
-	return `<pre class="lc-pre"><button class="lc-copy" title="复制代码" onclick="copyCode(this)">⧉</button><code class="${cls}">${inner}</code></pre>`;
+	return `<pre class="lc-pre"><button class="lc-copy" title="复制代码">⧉</button><code class="${cls}">${inner}</code></pre>`;
 }
 
 /**
@@ -257,33 +279,19 @@ function renderSimilarQuestionsHtml(q: any): string {
         const name = s.translatedTitle || s.title;
         const diffZh = difficultyZhOf(s.difficulty);
         const label = `${s.paidOnly ? '🔒' : ''}${name}${diffZh && diffZh !== name ? `（${diffZh}）` : ''}`;
-        // data-* 承载数据，onclick 只传元素：标题/难度含引号也不破坏属性
-        return `<button class="similar-item" data-slug="${escapeHtml(s.titleSlug)}" data-title="${escapeHtml(name)}" data-diff="${escapeHtml(s.difficulty)}" title="${escapeHtml(s.title)}${s.paidOnly ? '（会员题）' : ''}" onclick="openSimilarProblem(this)">${escapeHtml(label)}</button>`;
+        // data-* 承载数据，交互走统一 click 委托：标题/难度含引号也不破坏属性
+        return `<button class="similar-item" data-slug="${escapeHtml(s.titleSlug)}" data-title="${escapeHtml(name)}" data-diff="${escapeHtml(s.difficulty)}" title="${escapeHtml(s.title)}${s.paidOnly ? '（会员题）' : ''}">${escapeHtml(label)}</button>`;
     }).join('');
     return `<hr/><div class="similar-section"><h3>🧩 相似题目</h3><div class="similar-list">${items}</div></div>`;
-}
-
-function codeTabOrder(lang: string): number {
-	const l = lang.toLowerCase().replace(/\s+/g, '');
-	if (l === 'python3' || l === 'python' || l === 'py') {
-		return 0;
-	}
-	if (l === 'c' || l === 'c++' || l === 'cpp') {
-		return 1;
-	}
-	if (l === 'java') {
-		return 2;
-	}
-	return 3;
 }
 
 function renderCodeTabsHtml(blocks: MarkdownCodeBlock[], preferredFirst: boolean = false): string {
 	let ordered = blocks;
 	if (preferredFirst && blocks.length > 1) {
 		// sort 稳定：同一优先级内保持原文顺序
-		ordered = blocks.slice().sort((a, b) => codeTabOrder(a.lang) - codeTabOrder(b.lang));
+		ordered = blocks.slice().sort((a, b) => codeLangOrder(a.lang) - codeLangOrder(b.lang));
 	}
-	const tabs = ordered.map((b, idx) => `<button class="lang-tab${idx === 0 ? ' active' : ''}" onclick="selectLangTab(this)">${escapeHtml(displayLangName(b.lang))}</button>`).join('');
+	const tabs = ordered.map((b, idx) => `<button class="lang-tab${idx === 0 ? ' active' : ''}">${escapeHtml(displayLangName(b.lang))}</button>`).join('');
 	const contents = ordered.map((b, idx) => `<div class="lang-code-block${idx === 0 ? ' active' : ''}">${renderCodeBlockHtml(b)}</div>`).join('');
 	return `<div class="code-tabs-container"><div class="lang-tabs">${tabs}</div>${contents}</div>`;
 }
@@ -292,13 +300,10 @@ function pickPreferredCodeBlock(blocks: MarkdownCodeBlock[]): MarkdownCodeBlock 
 	if (blocks.length === 0) {
 		return null;
 	}
-	for (const priority of [0, 1]) {
-		const picked = blocks.find(b => codeLangPriority(b.lang) === priority);
-		if (picked) {
-			return picked;
-		}
-	}
-	return blocks[0];
+	// 优先 Python，其次 C/C++；皆无时取原文第一个（保持历史语义）
+	return blocks.find(b => codeLangOrder(b.lang) === 0)
+		?? blocks.find(b => codeLangOrder(b.lang) === 1)
+		?? blocks[0];
 }
 
 export function renderMarkdownToHtml(md: string, codeMode: 'preferred' | 'all' = 'preferred', preferredFirst: boolean = false, videoPageUrl?: string): string {
@@ -446,12 +451,21 @@ let hljsRuntime: any = null;
 
 let highlightJsContent: string | null = null;
 
+// vendor/highlight.min.js 的 sha256 钉死（更新 vendor 副本时同步更新此值）：
+// 在扩展宿主进程执行第三方脚本属供应链放大面，哈希不匹配拒绝加载（代码块回退纯文本显示）
+const HLJS_SHA256 = '837a6fa5b0c736b52bbde2b2b6190f305da3fc9ed41681db5321507057b5c846';
+
 function getHighlightJs(context: vscode.ExtensionContext): string | null {
 	if (highlightJsContent !== null) {
 		return highlightJsContent;
 	}
 	try {
-		highlightJsContent = fs.readFileSync(path.join(context.extensionPath, 'vendor', 'highlight.min.js'), 'utf8');
+		const js = fs.readFileSync(path.join(context.extensionPath, 'vendor', 'highlight.min.js'), 'utf8');
+		const hash = createHash('sha256').update(js).digest('hex');
+		if (hash !== HLJS_SHA256) {
+			return null;
+		}
+		highlightJsContent = js;
 		return highlightJsContent;
 	} catch (e) {
 		return null;
@@ -481,9 +495,9 @@ function highlightLangName(lang: string): string | null {
 	return HLJS_LANG_MAP[lang.toLowerCase()] || null;
 }
 
-let playerFiles: { apiJs: string; apiCss: string; hlsJs: string } | null = null;
+let playerFiles: { apiJs: string; apiCss: string; hlsJs: string; soundtouchJs?: string } | null = null;
 
-export function getPlayerFiles(context: vscode.ExtensionContext): { apiJs: string; apiCss: string; hlsJs: string } | null {
+function getPlayerFiles(context: vscode.ExtensionContext): { apiJs: string; apiCss: string; hlsJs: string; soundtouchJs?: string } | null {
 	if (playerFiles) {
 		return playerFiles;
 	}
@@ -494,7 +508,9 @@ export function getPlayerFiles(context: vscode.ExtensionContext): { apiJs: strin
 	if (!fs.existsSync(apiJs) || !fs.existsSync(apiCss) || !fs.existsSync(hlsJs)) {
 		return null;
 	}
-	playerFiles = { apiJs, apiCss, hlsJs };
+	// soundtouchjs：音频保调变速（倍速播放 >1x 时 WebAudio 走它，1x 仍用原生 BufferSource 零开销）
+	const soundtouchJs = path.join(base, 'soundtouch.min.js');
+	playerFiles = { apiJs, apiCss, hlsJs, soundtouchJs: fs.existsSync(soundtouchJs) ? soundtouchJs : undefined };
 	return playerFiles;
 }
 
@@ -505,20 +521,22 @@ export const generatePanelHtml = (
 	questionContent: string,
 	context: vscode.ExtensionContext,
 	panel: vscode.WebviewPanel,
-	activeTab: string,
+	activeTab: 'problem' | 'solution',
 	solutionContent: string = ''
 ): string => {
 						const playerFiles = getPlayerFiles(context);
 						const playerView = playerFiles ? {
 							css: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.apiCss)).toString(),
 							apiJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.apiJs)).toString(),
-							hlsJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.hlsJs)).toString()
+							hlsJs: panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.hlsJs)).toString(),
+							soundtouchJs: playerFiles.soundtouchJs ? panel.webview.asWebviewUri(vscode.Uri.file(playerFiles.soundtouchJs)).toString() : ''
 						} : null;
 						const playerAssetsJson = JSON.stringify(playerView ? {
 							apiJs: playerView.apiJs,
 							apiCss: playerView.css,
-							hlsJs: playerView.hlsJs
-						} : { apiJs: '', apiCss: '', hlsJs: '' });
+							hlsJs: playerView.hlsJs,
+							soundtouchJs: playerView.soundtouchJs
+						} : { apiJs: '', apiCss: '', hlsJs: '', soundtouchJs: '' });
 						const similarHtml = renderSimilarQuestionsHtml(q);
 						// 每次生成唯一 nonce：VS Code webview 对内容完全相同的 html 再次赋值不触发导航
 						//（iframe src 未变、DOM 保留），刷新重建的页面必须带新 nonce 才能显示出来
@@ -530,6 +548,9 @@ export const generatePanelHtml = (
 					<head>
 						<meta charset="UTF-8">
 						<meta name="viewport" content="width=device-width, initial-scale=1.0">
+						<!-- webview 安全边界：默认零信任；脚本仅 nonce 内联 + 扩展资源 + KaTeX CDN 单域，
+						     连接收窄到 leetcode.cn/阿里云；交互全部走 addEventListener（无内联事件处理器） -->
+						<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' ${panel.webview.cspSource} https://cdn.jsdelivr.net; style-src 'unsafe-inline' ${panel.webview.cspSource} https://cdn.jsdelivr.net; img-src ${panel.webview.cspSource} https: data:; media-src ${panel.webview.cspSource} https:; font-src ${panel.webview.cspSource} https: data:; connect-src ${panel.webview.cspSource} https://leetcode.cn https://*.leetcode.cn https://*.aliyuncs.com; worker-src blob:;">
 						<title>${escapeHtml(q.questionFrontendId)}. ${escapeHtml(title)}</title>
 						<style>
 							body {
@@ -687,33 +708,7 @@ export const generatePanelHtml = (
 									opacity: 1;
 									background: var(--vscode-tab-hoverBackground);
 								}
-								/* 高亮 token 一律透明背景，避免文字后出现难看的底色条 */
-								.solution-content pre code span,
-								.solution-content pre code .hljs-keyword,
-								.solution-content pre code .hljs-string,
-								.solution-content pre code .hljs-comment,
-								.solution-content pre code .hljs-title,
-								.solution-content pre code .hljs-number,
-								.solution-content pre code .hljs-built_in,
-								.solution-content pre code .hljs-literal,
-								.solution-content pre code .hljs-attr,
-								.solution-content pre code .hljs-type,
-								.solution-content pre code .hljs-params,
-								.solution-content pre code .hljs-variable,
-								.solution-content pre code .hljs-symbol,
-								.solution-content pre code .hljs-meta,
-								.solution-content pre code .hljs-regexp,
-								.solution-content pre code .hljs-quote,
-								.solution-content pre code .hljs-addition,
-								.solution-content pre code .hljs-doctag,
-								.solution-content pre code .hljs-selector-tag,
-								.solution-content pre code .hljs-name,
-								.solution-content pre code .hljs-attribute,
-								.solution-content pre code .hljs-template-variable,
-								.solution-content pre code .hljs-variable.language_ {
-									background: transparent !important;
-									box-shadow: none !important;
-								}
+								/* 高亮 token 一律透明背景（唯一来源，勿再复制）：见下方"兜底"块 */
 							/* 代码块标签样式 */
 							.code-tabs {
 								display: flex;
@@ -1061,6 +1056,38 @@ export const generatePanelHtml = (
 								font-size: 12px;
 								white-space: nowrap;
 							}
+							/* 倍速下拉菜单（主流播放器交互：dark 浮层 + 当前项高亮） */
+							.lc-vc-speed-menu {
+								position: absolute;
+								display: none;
+								flex-direction: column;
+								min-width: 96px;
+								padding: 4px 0;
+								background: rgba(24, 24, 28, .96);
+								border: 1px solid rgba(255, 255, 255, .18);
+								border-radius: 6px;
+								box-shadow: 0 4px 16px rgba(0, 0, 0, .5);
+								z-index: 20;
+							}
+							.lc-vc-speed-menu.show {
+								display: flex;
+							}
+							.lc-vc-speed-opt {
+								padding: 7px 16px;
+								font-size: 13px;
+								line-height: 1.2;
+								text-align: center;
+								color: #e8e8e8;
+								cursor: pointer;
+								white-space: nowrap;
+							}
+							.lc-vc-speed-opt:hover {
+								background: rgba(255, 255, 255, .12);
+							}
+							.lc-vc-speed-opt.active {
+								color: #0a84ff;
+								font-weight: 600;
+							}
 							/* 首帧播放遮罩：点击播放（真实用户手势），确保视频有声输出 */
 							.lc-video-overlay {
 								position: absolute;
@@ -1129,30 +1156,30 @@ export const generatePanelHtml = (
 					</head>
 <body>
 							<div class="tabs">
-								<button class="tab ${activeTab === 'problem' ? 'active' : ''}" onclick="switchTab('problem')">📝 题目描述</button>
-								<button class="tab ${activeTab === 'solution' ? 'active' : ''}" onclick="switchTab('solution')">📖 题解</button>
-								<button class="tab refresh-tab" onclick="refreshCurrent()" title="刷新当前标签">🔄 刷新</button>
+								<button class="tab ${activeTab === 'problem' ? 'active' : ''}" data-switch-tab="problem">📝 题目描述</button>
+								<button class="tab ${activeTab === 'solution' ? 'active' : ''}" data-switch-tab="solution">📖 题解</button>
+								<button class="tab refresh-tab" data-refresh-tab="1" title="刷新当前标签">🔄 刷新</button>
 							</div>
 						
 						<div class="content-wrapper">
 <div id="problem-tab" class="${activeTab === 'problem' ? '' : 'hidden'}">
 									<h1>${escapeHtml(q.questionFrontendId)}. ${escapeHtml(title)}</h1>
 									<div class="meta">
-										<span class="difficulty-${q.difficulty.toLowerCase()}">${difficulty}</span>
-										 | 👍 ${q.likes} | 👎 ${q.dislikes}
+										<span class="difficulty-${escapeHtml(String(q.difficulty || '').toLowerCase())}">${escapeHtml(difficulty)}</span>
+										 | 👍 ${escapeHtml(String(q.likes ?? ''))} | 👎 ${escapeHtml(String(q.dislikes ?? ''))}
 									</div>
 									<div class="tag-chips">${(q.topicTags || []).map((t: any) => `<span class="tag-chip">${escapeHtml(t.translatedName || t.name)}</span>`).join('')}</div>
 									<hr/>
-									<div class="problem-content">${questionContent}</div>
+									<div class="problem-content">${sanitizeUnsafeHtml(questionContent)}</div>
 									${similarHtml}
 								</div>
 							
-							<div id="solution-tab" class="${activeTab === 'solution' ? '' : 'hidden'}">
-								${solutionContent || '<div class="loading">点击"题解"标签加载题解内容...</div>'}
-							</div>
+						<div id="solution-tab" class="${activeTab === 'solution' ? '' : 'hidden'}">
+							${solutionContent ? sanitizeUnsafeHtml(solutionContent) : '<div class="loading">点击"题解"标签加载题解内容...</div>'}
 						</div>
-						
-						<script>
+					</div>
+
+					<script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 									// 重建页（solution 模式）已内嵌内容：视为已加载，避免再点"题解"标签重复拉取重建
 									let solutionLoaded = ${activeTab === 'solution' && solutionContent ? 'true' : 'false'};
@@ -1262,8 +1289,7 @@ function selectLangTab(btn) {
 								var container = btn.closest('.code-tabs-container');
 								var code = null;
 								if (container) {
-									var active = container.querySelector('.lang-code-block.active code, .lang-code-block code');
-									code = container.querySelector('.lang-code-block.active code') || active;
+									code = container.querySelector('.lang-code-block.active code') || container.querySelector('.lang-code-block code');
 								}
 								if (!code) {
 									var pre = btn.closest('pre');
@@ -1319,6 +1345,13 @@ function selectLangTab(btn) {
 								document.head.appendChild(l);
 							}
 							
+							// 视频容器被换源/替换时统一解绑 document 级监听与定时器，避免同页多次换源累积泄漏
+								var lcVideoCleanups = [];
+								function runVideoCleanups() {
+									lcVideoCleanups.forEach(function(fn) { try { fn(); } catch (e) {} });
+									lcVideoCleanups = [];
+								}
+
 // 自绘视频控制栏：Electron webview 中浏览器原生 <video controls> 的音量/全屏按钮不可用，
 								// 且原生全屏被 webview 平台禁止（document.fullscreenEnabled 恒为 false）。
 								// 主路径（扩展端 remux 的本地 MP4 原生 <video>）与 Aliplayer 兜底路径统一
@@ -1334,6 +1367,7 @@ function selectLangTab(btn) {
 									wrap.innerHTML = '<div class="lc-vc-progress"><div class="lc-vc-progress-fill"></div></div>'
 										+ '<div class="lc-vc-row"><button class="lc-vc-play" title="播放/暂停">▶</button>'
 										+ '<span class="lc-vc-time">0:00 / 0:00</span><span class="lc-vc-flex"></span>'
+										+ '<button class="lc-vc-speed" title="倍速">1.0×</button>'
 										+ '<div class="lc-vc-vol"><button class="lc-vc-mute" title="静音/取消静音">🔊</button>'
 										+ '<input type="range" min="0" max="100" step="1" value="100" title="音量" /></div>'
 										+ '<button class="lc-vc-fs" title="全屏">⛶</button></div>';
@@ -1357,6 +1391,25 @@ function selectLangTab(btn) {
 									var audioPending = false;
 									var audioSrcStartedAt = 0;
 									var audioSrcOffset = 0;
+									// 倍速：<video> 走 playbackRate（Chromium 默认 preservesPitch）；音频 >1x 时
+									// 改用 soundtouchjs 的 PitchShifter（tempo 变速保持音调），1x 仍走原生
+									// BufferSource（零开销、零依赖）；同速切换时按视频时钟重建音源对齐
+									var SPEED_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+									var curSpeed = 1;
+									var soundtouchLoading = false;
+									function loadSoundtouch(cb) {
+										if (typeof window.SoundTouchJS !== 'undefined') { cb(true); return; }
+										if (soundtouchLoading || !LEETCODE_PLAYER_ASSETS.soundtouchJs) { cb(false); return; }
+										soundtouchLoading = true;
+										import(LEETCODE_PLAYER_ASSETS.soundtouchJs).then(function(m) {
+											window.SoundTouchJS = m;
+											soundtouchLoading = false;
+											cb(true);
+										}).catch(function() {
+											soundtouchLoading = false;
+											cb(false);
+										});
+									}
 									function createAudioCtx() {
 										try {
 											var AC = window.AudioContext || window.webkitAudioContext;
@@ -1390,15 +1443,28 @@ function selectLangTab(btn) {
 										if (!audioReady || !audioCtx) { return; }
 										audioStop();
 										var offset = Math.min(Math.max(v.currentTime, 0), Math.max(audioBuf.duration - 0.1, 0));
-										audioSrc = audioCtx.createBufferSource();
-										audioSrc.buffer = audioBuf;
-										audioSrc.connect(audioGain);
+										if (curSpeed !== 1 && typeof window.SoundTouchJS !== 'undefined' && window.SoundTouchJS.PitchShifter) {
+											audioSrc = new window.SoundTouchJS.PitchShifter(audioCtx, audioBuf, 1024);
+											audioSrc.tempo = curSpeed;
+											audioSrc.connect(audioGain);
+											audioSrc.percentagePlayed = audioBuf.duration > 0 ? Math.min(1, offset / audioBuf.duration) : 0;
+										} else {
+											audioSrc = audioCtx.createBufferSource();
+											audioSrc.buffer = audioBuf;
+											audioSrc.playbackRate.value = curSpeed;
+											audioSrc.connect(audioGain);
+											audioSrc.start(0, offset);
+										}
 										audioSrcStartedAt = audioCtx.currentTime;
 										audioSrcOffset = offset;
-										audioSrc.start(0, offset);
 									}
 									function audioStop() {
-										if (audioSrc) { try { audioSrc.stop(); } catch (e) {} audioSrc = null; }
+										if (audioSrc) {
+											try {
+												if (audioSrc.disconnect) { audioSrc.disconnect(); } else { audioSrc.stop(); }
+											} catch (e) {}
+											audioSrc = null;
+										}
 									}
 									function applyVolume() {
 										if (audioGain) {
@@ -1413,9 +1479,12 @@ function selectLangTab(btn) {
 									v.addEventListener('seeked', function() { if (!v.paused) { audioStart(); } });
 									v.addEventListener('volumechange', applyVolume);
 									// 音轨由 AudioBuffer 时钟控制，周期性与 video 时间对齐（>0.8s 才重对齐避免咔哒）
-									setInterval(function() {
+									var audioAlignTimer = setInterval(function() {
 										if (!audioReady || !audioSrc || !audioCtx || v.paused) { return; }
-										var audioPos = (audioCtx.currentTime - audioSrcStartedAt) + audioSrcOffset;
+										// SoundTouchJS 的 timePlayed 是真实音轨进度；原生 BufferSource 用时钟×倍速近似
+										var audioPos = (audioSrc.timePlayed !== undefined)
+											? audioSrc.timePlayed
+											: (audioCtx.currentTime - audioSrcStartedAt) * curSpeed + audioSrcOffset;
 										if (Math.abs(audioPos - v.currentTime) > 0.8) { audioStart(); }
 									}, 10000);
 									function startPlay() {
@@ -1443,6 +1512,7 @@ function selectLangTab(btn) {
 									var muteBtn = wrap.querySelector('.lc-vc-mute');
 									var volInput = wrap.querySelector('.lc-vc-vol input');
 									var fsBtn = wrap.querySelector('.lc-vc-fs');
+									var speedBtn = wrap.querySelector('.lc-vc-speed');
 									var progressEl = wrap.querySelector('.lc-vc-progress');
 									function fmt(t) {
 										if (!isFinite(t) || t < 0) { return '0:00'; }
@@ -1479,9 +1549,65 @@ function selectLangTab(btn) {
 										v.volume = val;
 										applyVolume();
 									});
-									fsBtn.addEventListener('click', function(e) {
+fsBtn.addEventListener('click', function(e) {
+									e.stopPropagation();
+									toggleVideoFullscreen(container);
+								});
+// 倍速下拉菜单（主流播放器交互：点击倍速按钮弹出选项列表，当前项高亮，点外部/Esc 关闭）
+									var speedMenu = document.createElement('div');
+									speedMenu.className = 'lc-vc-speed-menu';
+									SPEED_STEPS.forEach(function(s) {
+										var opt = document.createElement('span');
+										opt.className = 'lc-vc-speed-opt';
+										opt.textContent = s + '×';
+										opt.setAttribute('data-speed', String(s));
+										opt.addEventListener('click', function(e) {
+											e.stopPropagation();
+											setSpeed(s);
+											hideSpeedMenu();
+										});
+										speedMenu.appendChild(opt);
+									});
+									wrap.appendChild(speedMenu);
+									function syncSpeedMenu() {
+										var opts = speedMenu.querySelectorAll('.lc-vc-speed-opt');
+										Array.prototype.forEach.call(opts, function(o) {
+											o.classList.toggle('active', Number(o.getAttribute('data-speed')) === curSpeed);
+										});
+									}
+									function showSpeedMenu() {
+										syncSpeedMenu();
+										// 菜单锚定在倍速按钮上方（按钮在 flex 行内，位置随窗口宽度变化）
+										var btnRect = speedBtn.getBoundingClientRect();
+										var wrapRect = wrap.getBoundingClientRect();
+										speedMenu.style.left = Math.max(0, btnRect.left - wrapRect.left + btnRect.width - 96) + 'px';
+										speedMenu.style.bottom = (wrapRect.bottom - btnRect.top + 4) + 'px';
+										speedMenu.classList.add('show');
+										clearTimeout(hideTimer); // 菜单展开时控制栏不自动隐藏
+									}
+									function hideSpeedMenu() {
+										speedMenu.classList.remove('show');
+									}
+									function setSpeed(speed) {
+										curSpeed = speed;
+										speedBtn.textContent = speed + '×';
+										v.playbackRate = speed;
+										function restartAudio() { if (audioReady && !v.paused) { audioStop(); audioStart(); } }
+										var want = speed;
+										if (want !== 1) {
+											// 库就绪前先用原生 BufferSource（音调随倍速）顶住不中断，就绪后切保调播放
+											loadSoundtouch(function() { if (curSpeed === want) { restartAudio(); } });
+										}
+										restartAudio();
+									}
+									speedBtn.addEventListener('click', function(e) {
 										e.stopPropagation();
-										toggleVideoFullscreen(container);
+										if (speedMenu.classList.contains('show')) { hideSpeedMenu(); } else { showSpeedMenu(); }
+									});
+									document.addEventListener('click', function(e) {
+										if (speedMenu.classList.contains('show') && !speedMenu.contains(e.target) && !speedBtn.contains(e.target)) {
+											hideSpeedMenu();
+										}
 									});
 									var dragging = false;
 									function seekFromEvent(e) {
@@ -1496,8 +1622,14 @@ function selectLangTab(btn) {
 										e.preventDefault();
 										e.stopPropagation();
 									});
-									document.addEventListener('mousemove', function(e) { if (dragging) { seekFromEvent(e); } });
-									document.addEventListener('mouseup', function() { dragging = false; });
+									function onDocMove(e) { if (dragging) { seekFromEvent(e); } }
+									function onDocUp() { dragging = false; }
+									function onDocKey(ev) {
+										if (ev.key === 'Escape' || ev.keyCode === 27) { hideSpeedMenu(); }
+									}
+									document.addEventListener('mousemove', onDocMove);
+									document.addEventListener('mouseup', onDocUp);
+									document.addEventListener('keydown', onDocKey);
 									// 点击画面播放/暂停
 									v.addEventListener('click', function() {
 										createAudioCtx();
@@ -1505,11 +1637,14 @@ function selectLangTab(btn) {
 										if (v.paused) { v.play().catch(function() {}); } else { v.pause(); }
 									});
 									// 鼠标活动显示控制栏，2.5s 无操作自动隐藏
-									var hideTimer = null;
-									function scheduleHide() {
-										clearTimeout(hideTimer);
-										hideTimer = setTimeout(function() { wrap.classList.remove('show'); }, 2500);
-									}
+var hideTimer = null;
+								function scheduleHide() {
+									clearTimeout(hideTimer);
+									hideTimer = setTimeout(function() {
+										if (speedMenu.classList.contains('show')) { return; } // 菜单展开时不自动隐藏
+										wrap.classList.remove('show');
+									}, 2500);
+								}
 									container.addEventListener('mousemove', function() {
 										wrap.classList.add('show');
 										scheduleHide();
@@ -1521,12 +1656,22 @@ function selectLangTab(btn) {
 									wrap.classList.add('show');
 									scheduleHide();
 									refresh();
+									// 容器销毁/换源时统一解绑（document 级监听与定时器不随容器回收）
+									lcVideoCleanups.push(function() {
+										clearInterval(audioAlignTimer);
+										clearTimeout(hideTimer);
+										document.removeEventListener('mousemove', onDocMove);
+										document.removeEventListener('mouseup', onDocUp);
+										document.removeEventListener('keydown', onDocKey);
+										audioStop();
+									});
 								}
 								
 								function attachAliplayer(container, msg) {
 									ensureAliplayerCss();
 									ensurePlayer('aliplayer', function(ok) {
 										if (!ok || typeof Aliplayer === 'undefined' || !msg.videoId || !msg.playAuth) {
+											runVideoCleanups();
 											container.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
 											return;
 										}
@@ -1553,6 +1698,7 @@ function selectLangTab(btn) {
 												}
 											})(0);
 										} catch (e) {
+											runVideoCleanups();
 											container.replaceWith(makeVideoBrowserFallback(msg.pageUrl));
 										}
 									});
@@ -1615,31 +1761,58 @@ v.addEventListener('error', fallbackOnFail);
 									// 播放由首帧遮罩用户点击触发（autoplay 会被 Chromium/Electron 静音）
 							}
 							
-							// VS Code webview 不支持原生全屏（document.fullscreenEnabled 恒为 false），
-								// 视频全屏统一为 CSS 全屏（容器铺满 webview 视口，ESC 退出）
-								function toggleVideoFullscreen(wrap) {
-									var expanded = wrap.classList.toggle('lc-video-expanded');
-									if (expanded) {
-										document.addEventListener('keydown', function esc(ev) {
-											if (ev.key === 'Escape' || ev.keyCode === 27) {
+								// VS Code webview 不支持原生全屏（document.fullscreenEnabled 恒为 false），
+									// 视频全屏统一为 CSS 全屏（容器铺满 webview 视口，ESC 或按钮退出）
+									function toggleVideoFullscreen(wrap) {
+										var expanded = wrap.classList.toggle('lc-video-expanded');
+										if (expanded) {
+											function esc(ev) {
+												if (ev.key === 'Escape' || ev.keyCode === 27) { exit(); }
+											}
+											function exit() {
 												wrap.classList.remove('lc-video-expanded');
 												document.removeEventListener('keydown', esc);
 											}
-										});
+											wrap._lcExitFs = exit;
+											document.addEventListener('keydown', esc);
+										} else if (wrap._lcExitFs) {
+											// 按钮退出全屏：同步移除 esc 监听（此前漏移除，之后按 Esc 会残留执行一次 remove）
+											wrap._lcExitFs();
+											wrap._lcExitFs = null;
+										}
 									}
-								}
-								
-								window.addEventListener('message', function(ev) {
-								var msg = ev.data;
-								if (!msg || msg.type !== 'videoReady') return;
-								var btn = document.querySelector('.video-link[data-loading="1"]');
-								if (!btn) return;
-								var container = document.createElement('div');
-								container.className = 'article-video';
-								container.id = 'lc-video-' + Date.now();
-								btn.replaceWith(container);
-								setupVideoPlayer(container, msg);
-							});
+
+									window.addEventListener('message', function(ev) {
+									var msg = ev.data;
+									if (!msg || msg.type !== 'videoReady') return;
+									var btn = document.querySelector('.video-link[data-loading="1"]');
+									if (!btn) return;
+									runVideoCleanups();
+									var container = document.createElement('div');
+									container.className = 'article-video';
+									container.id = 'lc-video-' + Date.now();
+									btn.replaceWith(container);
+									setupVideoPlayer(container, msg);
+								});
+
+								// 交互统一走 click 委托（无内联 onclick，配合 CSP nonce 收紧）
+								document.addEventListener('click', function(e) {
+									var t = e.target;
+									if (!t || !t.closest) { return; }
+									var copy = t.closest('.lc-copy');
+									if (copy) { copyCode(copy); return; }
+									var video = t.closest('.video-link');
+									if (video && video.getAttribute('data-play-uuid') && !video.disabled) { playArticleVideo(video); return; }
+									var similar = t.closest('.similar-item');
+									if (similar) { openSimilarProblem(similar); return; }
+									var langTab = t.closest('.lang-tab');
+									if (langTab) { selectLangTab(langTab); return; }
+									var article = t.closest('.article-item');
+									if (article && article.getAttribute('data-slug')) { openArticle(article.getAttribute('data-slug')); return; }
+									var sw = t.closest('[data-switch-tab]');
+									if (sw) { switchTab(sw.getAttribute('data-switch-tab')); return; }
+									if (t.closest('[data-refresh-tab]')) { refreshCurrent(); }
+								});
 							
 							// 官方题解动画帧播放器：data-frames 为 | 分隔的帧 URL，data-interval 为每帧毫秒数；
 								// 点击 ▶ 自动播放（可暂停），手动切帧自动暂停，页码循环

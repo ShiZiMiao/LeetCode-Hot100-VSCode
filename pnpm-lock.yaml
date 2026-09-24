@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       playwright-core:
-        specifier: ^1.63.0
+        specifier: 1.63.0
         version: 1.63.0
     devDependencies:
       '@types/mocha':

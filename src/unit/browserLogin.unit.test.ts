@@ -80,14 +80,14 @@ test('detectDefaultBrowser：win32 https 优先、失败回退 http、全失败 
 	const regOut = (progId: string) => ({ status: 0, stdout: `    ProgId    REG_SZ    ${progId}\n` });
 	const calls: string[] = [];
 	assert.deepEqual(
-		detectDefaultBrowser((cmd, args) => {
+		detectDefaultBrowser((_cmd, args) => {
 			calls.push(args[1] || '');
 			return args[1] && args[1].includes('https') ? regOut('MSEdgeHTM') : { status: 1, stdout: '' };
 		}, 'win32'),
 		{ kind: 'chromium', channel: 'msedge' }
 	);
 	// https 键不存在（Win10 部分版本只有 http 关联）→ 回退 http
-	const r2 = detectDefaultBrowser((cmd, args) => (args[1] && args[1].includes('http\\') ? regOut('ChromeHTML') : { status: 1, stdout: '' }), 'win32');
+	const r2 = detectDefaultBrowser((_cmd, args) => (args[1] && args[1].includes('http\\') ? regOut('ChromeHTML') : { status: 1, stdout: '' }), 'win32');
 	assert.deepEqual(r2, { kind: 'chromium', channel: 'chrome' });
 	// 两个键都没有 → unknown
 	assert.deepEqual(detectDefaultBrowser(() => ({ status: 1, stdout: '' }), 'win32'), { kind: 'unknown' });

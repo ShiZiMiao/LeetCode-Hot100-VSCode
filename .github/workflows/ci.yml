@@ -7,9 +7,12 @@ on:
 
 jobs:
   build-test:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
 
       - uses: pnpm/action-setup@v4
         with:
@@ -30,4 +33,4 @@ jobs:
         run: pnpm run compile
 
       - name: Unit tests (pure logic, node:test)
-        run: node --test out/unit
+        run: pnpm run test:unit

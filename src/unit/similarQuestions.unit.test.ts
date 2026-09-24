@@ -3,7 +3,7 @@
  */
 import { test } from 'node:test';
 import * as assert from 'node:assert';
-import { parseSimilarQuestions, difficultyZhOf, SimilarQuestion } from '../utils/similarQuestions';
+import { parseSimilarQuestions, difficultyZhOf } from '../utils/similarQuestions';
 
 test('parseSimilarQuestions：JSON 字符串数组（真实接口形态）', () => {
     const raw = '[{"title": "3Sum", "titleSlug": "3sum", "difficulty": "Medium", "translatedTitle": "三数之和", "isPaidOnly": false}, {"title": "4Sum", "titleSlug": "4sum", "difficulty": "Medium", "translatedTitle": "四数之和", "isPaidOnly": true}]';

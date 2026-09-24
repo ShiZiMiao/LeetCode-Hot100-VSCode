@@ -8,7 +8,7 @@
 
 - **原仓库**：`https://github.com/Imzhou-tju/Hot100-for-VSCode`（MIT，原作者）
 - **当前仓库（fork 修复版）**：`https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode`
-- **当前版本**：`0.1.10`
+- **当前版本**：`0.1.15`
 - **技术栈**：TypeScript、Node.js（>=16）、VS Code Extension API（>=1.107）、pnpm
 - **运行时依赖**：`playwright-core`（登录一键浏览器功能，`require` 走 `vendor/playwright-core/` 副本）。**打包不经过 node_modules**（vsce 带 `--no-dependencies`），vendor 副本须先同步（见打包步骤）；历史死依赖 `marked` 已移除。webview 渲染全部扩展端自研 + 本地 vendor 资源。
 
@@ -69,7 +69,7 @@ code --install-extension "D:/code/lc/Hot100-for-VSCode/Hot100-for-VSCode.vsix" -
 - **Marketplace 自动同步**：`.github/workflows/publish-marketplace.yml` 在 GitHub Release 发布后自动打包并上传 VS Code Marketplace（`ShiZiMiao.leetcode`），用 OIDC 可信发布（`vsce publish --oidc`），**无需 PAT / Azure DevOps**。前置条件：在 https://marketplace.visualstudio.com/manage 的发布者设置中为 `ShiZiMiao.leetcode` 配置 Trusted Publishing 信任策略（关联本仓库与 publish-marketplace.yml 工作流；GitHub Actions 作为受信任来源）。注意：**GitHub Release 前必须先把 package.json 版本号提到对应版本**，Marketplace 同步的是 package.json 里的版本。
 - **OIDC 可信发布现状（2026-09-10 实测）**：CLI 侧已就绪——`publish --oidc` 仅存在于 `@vscode/vsce@next`（3.9.3 系列，需 Node ≥22；latest 3.9.2 没有），且该选项被上游 `hideHelp()` 隐藏（PR #1291 实现、#1297 隐藏 help），**用 `--help` 验证会误判为不存在，需读源码**。工作流已切 `@vscode/vsce@next` + `node-version: 22`。**但 Marketplace 服务端未实现**：2026-09-10 用测试分支手动触发 workflow_dispatch 实测，GitHub Actions OIDC token 获取成功，但凭证交换请求 `https://marketplace.visualstudio.com/_apis/gallery/token` 返回 **404**（controller 不存在）；服务端 issue（microsoft/vscode-vsce#1275）仍 open，维护者 2026-08 称"可能 9 月左右提供"，Marketplace 管理端（publisher 的 Extensions/Details/Members、扩展 hub 的 Manage）也**没有 Trusted Publishing 配置入口**。→ 在端点上线并在管理端配好信任策略之前，**CI 的 publish 步必然失败（属预期），发布继续走手动网页上传**：Marketplace 管理页 → 扩展条目 → 上传本地 `vsce package` 产物（`D:/code/lc/Hot100-for-VSCode/Hot100-for-VSCode.vsix`，同版本可覆盖）。
 
-  **网页上传必须由用户手动完成（2026-09-10 实测自动化三路全封死）**：① IAB 与 Tabbit 的 CDP 运行时都拒绝 `DOM.setFileInputFiles`（"Not allowed"，即 filechooser.setFiles 也不可用）；无 filechooser 监听时点击上传区也不会弹系统文件框；② 管理页 CSP `connect-src` 白名单不含本地回环地址，页面内 fetch+DataTransfer 注入文件被 CSP 拒绝（实测 "Failed to fetch"；route 剥 CSP 响应头会引发全请求拦截挂起、任务被 quarantine，勿再尝试）。→ 上传那一步固定交给用户：打开管理页 → New extension → **Visual Studio Code**（注意是下拉菜单）→ 选择 VSIX 文件 → Upload。上传前把 VSIX 拷到 `C:\Users\lecoo\Downloads`。
+  **网页上传必须由用户手动完成（2026-09-10 实测自动化三路全封死）**：① IAB 与 Tabbit 的 CDP 运行时都拒绝 `DOM.setFileInputFiles`（"Not allowed"，即 filechooser.setFiles 也不可用）；无 filechooser 监听时点击上传区也不会弹系统文件框；② 管理页 CSP `connect-src` 白名单不含本地回环地址，页面内 fetch+DataTransfer 注入文件被 CSP 拒绝（实测 "Failed to fetch"；route 剥 CSP 响应头会引发全请求拦截挂起、任务被 quarantine，勿再尝试）。→ 上传那一步固定交给用户：打开 **https://marketplace.visualstudio.com/manage/publishers/ShiZiMiao**（发布者管理页；扩展条目级直达 URL 会 404，勿用）→ 选择 leetcode 扩展 → New extension → **Visual Studio Code**（注意是下拉菜单）→ 选择 VSIX 文件 → Upload。上传前把 VSIX 拷到 `C:\Users\lecoo\Downloads`（**约定：发版总结必须附上该网址**）。
 - **Open VSX 同步发版**（`ShiZiMiao.leetcode`，与 Marketplace 并行；0.1.7 起已打通）。一次性前置已全部完成，无需再做：① open-vsx.org 用 GitHub（ShiZiMiao）登录；② Eclipse 账号（用户名 shizimiao）与 GitHub 已在 accounts.eclipse.org 的 **Link GitHub Account** 页双向绑定（注意资料页的 GitHub Username 字段只读，必须走 linked-accounts 绑定，否则 open-vsx 报 "Eclipse profile is missing a GitHub username"）；③ 已在 open-vsx.org Profile 页签署 Open VSX Publisher Agreement；④ 命名空间 `ShiZiMiao` 已用 `ovsx create-namespace` 创建。
   发新版的步骤：
   1. 生成 Access Token：open-vsx.org → 头像 → Access Tokens → Generate new token（浏览器有登录态，值一次性显示）。
@@ -95,9 +95,9 @@ src/
 ├── shared/
 │   └── webviewMessages.ts webview ↔ 扩展消息协议类型（webview 端是模板字符串 JS，只能靠类型做扩展端校验与文档）
 ├── utils/                （judgeReport/problemText/loginCookie/networkRetry/progressStats/wrongQueue/htmlUtil/difficultyGroups/studyStats/questionOrder/metaFormat 为无 vscode 依赖的纯逻辑，src/unit 单测覆盖）
-│   ├── debugUtils.ts     本地调试文件生成（Python 驱动含原地入参比对 + pydevd 自排除注册）
+│   ├── debugUtils.ts     本地调试文件生成（Python 驱动含链表/树入参按注解自动转换 + 用例↔示例期望按值配对 + 原地入参比对 + pydevd 自排除注册）
 │   ├── judgeReport.ts    判题报告纯逻辑（逐用例分组 / 提交场景汇总回退 / 逐用例结构化信息提取）
-│   ├── problemText.ts    题面期望输出提取、文件名身份解析
+│   ├── problemText.ts    题面示例输入/期望输出提取（驱动按值配对用例↔示例的锚点）、文件名身份解析
 │   ├── loginCookie.ts    登录 Cookie 组装（裸值拼装 / 整段粘贴自动拆分）
 │   ├── networkRetry.ts   瞬时网络故障与重试幂等判定纯逻辑
 │   ├── progressStats.ts  刷题进度统计/状态筛选纯逻辑

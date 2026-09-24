@@ -6,70 +6,30 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as vm from 'vm';
-import { createHash } from 'crypto';
 import { AuthManager } from './core/authManager';
 import { LeetCodeApi, Question } from './core/leetcodeApi';
 import { loginWithBrowser, pickChromiumChannel, detectDefaultBrowser } from './core/browserLogin';
 import { spawnSync } from 'child_process';
 import { Hot100Provider, GroupByMode } from './views/hot100Provider';
 import { StatusFilter } from './utils/progressStats';
-import { Hot100Question, HOT_100_LIST, HOT_100_IDS, categoryLabel } from './data/hot100Data';
+import { Hot100Question, HOT_100_LIST, categoryLabel } from './data/hot100Data';
 import { DIFFICULTY_ZH, isDifficultyLevel } from './utils/difficultyGroups';
 import { nextQuestion } from './utils/questionOrder';
+import { pickDailyQuestion } from './utils/dailyQuestion';
 import { isReviewDue, formatFailedAt, pickReviewCandidate } from './utils/wrongQueue';
 import { localDateStr } from './utils/studyStats';
-import { selectLanguage, getExtension, SUPPORTED_LANGUAGES } from './utils/languageUtils';
+import { getExtension, SUPPORTED_LANGUAGES } from './utils/languageUtils';
+import { selectLanguage } from './views/languageQuickPick';
 import { generateDebugFile } from './utils/debugUtils';
-import { buildJudgeReport, collectJudgeCaseInfos, JudgeCaseInfo } from './utils/judgeReport';
-import { extractExpectedOutputs, parseProblemFileName } from './utils/problemText';
+import { JudgeCaseInfo } from './utils/judgeReport';
+import { extractExampleInputs, extractExpectedOutputs, parseProblemFileName } from './utils/problemText';
 import { buildLeetCodeCookie } from './utils/loginCookie';
 import { escapeHtml, errMsg, formatArticleDate } from './utils/htmlUtil';
-import { generatePanelHtml, renderMarkdownToHtml, sanitizeSolutionContent, localizeContentImages, getPlayerFiles, initHighlightJs } from './views/problemPanel';
-import { reportJudgeResult, showRawJudgeResponse, tryBeginJudge, pollJudgeResult, releaseJudge, getLastJudgeCases, oneLine, judgeOutputChannel, judgeStatusBar, errorDiagnostics } from './judgeFeedback';
+import { difficultyZhOf } from './utils/similarQuestions';
+import { generatePanelHtml, renderMarkdownToHtml, sanitizeSolutionContent, localizeContentImages, initHighlightJs } from './views/problemPanel';
+import { reportJudgeResult, showRawJudgeResponse, tryBeginJudge, pollJudgeResult, releaseJudge, getLastJudgeCases, oneLine, judgeOutputChannel, judgeStatusBar, errorDiagnostics, JUDGE_POLL_BUDGET_MS } from './judgeFeedback';
 import { PanelToExtensionMessage, ExtensionToPanelMessage } from './shared/webviewMessages';
 
-/**
- * 清理题解 Markdown 内容中的 <iframe> 代码游玩区。
- *
- * LeetCode 官方题解内容包含指向 https://leetcode.cn/playground/... 的跨域 iframe。
- * 在 VS Code 的 webview 中，这类跨域 iframe 无法携带用户会话 Cookie，会被
- * LeetCode 重定向成登录页，导致题解显示异常。此函数将其整块移除，
- * 同时保留题解中的文字、公式与代码块。题目自身的代码骨架由
- * codeSnippets 以代码块形式单独展示。
- */
-
-/** HTML 转义，防止代码注入 */
-
-/** LeetCode 题解文章 createdAt 为秒级时间戳，格式化为日期；无效值返回空串 */
-
-/**
- * 提取干净的异常消息用于 toast/页面提示：直接 `${error}` 插值会带上裸 "Error:" 前缀，
- * 统一走这里，保持全部报错文案风格一致。
- */
-
-// 代码运行/提交错误以 VS Code 原生方式呈现：诊断（编辑器波浪线 + 问题面板），而非长文本弹窗
-
-/**
- * 把 LeetCode 运行/提交错误写入编辑器诊断，尽量定位到出错行。
- * 返回解析出的行号（1-based），未解析到时返回 null。
- */
-
-// LeetCode 判题详情通道：每次测试/提交都把完整判题信息（输入、输出、预期结果、
-// 错误信息）写进来；toast 只留一行简讯。Output 为纯文本视图，ANSI 颜色不可用，
-// 通过/失败与各字段用图标（✅/❌/📥/📤/🎯 等）标识。
-
-// 判题状态栏项：测试/提交的轮询等待期间显示已等待秒数（通知进度弹窗只有转圈没有时长感）
-judgeStatusBar.command = 'leetcode.showRawJudge';
-judgeStatusBar.tooltip = 'LeetCode 判题进行中（点击查看最近一次原始判题响应）';
-
-// 判题在途忙碌锁：测试/提交共用一把。并发 runCode 会互相覆盖"最近一次判题响应"，
-// 重复提交还会产生多条提交记录；命令入口同步占位、判题结束（成功/超时/异常）释放。
-
-/**
- * 判题结果轮询：1s 起步 ×1.5 指数退避封顶 5s，总预算 ~90s（旧实现固定 2s×15=30s，
- * 慢题判题会假性超时）；期间状态栏显示已等待秒数。超时返回 undefined 由调用方提示。
- */
 
 // 会话过期主动提示：服务端判定未登录（HTTP 401 / status_code 1002）时限频 toast，
 // 避免过期会话把每个请求都弹一遍
@@ -91,9 +51,7 @@ function notifySessionExpired(): void {
 // pending 集合做**同步**占位：两次快速连点时去重检查都可能在各自异步阶段完成前执行，
 // 仅靠 Map 存在性会竞态双开；命令入口同步登记后可拦住第二个调用
 const problemPanels = new Map<string, vscode.WebviewPanel>();
-const solutionPanels = new Map<string, vscode.WebviewPanel>();
 const pendingProblemOpens = new Set<string>();
-const pendingSolutionOpens = new Set<string>();
 
 // 题解 HTML 会话内缓存（key 为 titleSlug）：刷新时先立即渲染缓存内容、后台重取，
 // 网络波动/慢速时避免"加载题解中"长时间挂起（失败保留缓存，不覆盖）
@@ -110,11 +68,19 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 	});
 }
 
-// 最近一次判题的原始响应对象（JSON 编辑器按需展示用，支持折叠）
+/** 安全写入 webview html：面板被用户中途关闭后晚到结果不再抛 "Webview is disposed" */
+function safeSetHtml(panel: vscode.WebviewPanel, html: string): void {
+	try {
+		panel.webview.html = html;
+	} catch {
+		// 面板已释放（dispose 与晚到结果的竞态）：丢弃本次渲染
+	}
+}
 
-// 最近一次判题的逐用例信息（"用判题失败用例本地调试"入口用；携带 titleSlug 用于与当前文件比对防串题）
-
-/** 把可能含换行的文本压成一行用于 QuickPick 展示（输入/期望超长截断） */
+/** shell 双引号包裹 + 转义（终端命令拼路径用；引号/反引号/$ 防注入） */
+function shellQ(s: string): string {
+	return '"' + s.replace(/(["\\$`])/g, '\\$1') + '"';
+}
 
 /**
  * 取题解代码编辑器：焦点在真实文件编辑器（scheme === file）时直接使用；
@@ -149,18 +115,6 @@ async function getProblemCodeEditor(context: vscode.ExtensionContext): Promise<v
 }
 
 /**
- * 以 JSON 编辑器打开最近一次原始判题响应：JSON 语言模式自带折叠，
- * 与 Output 纯文本不同，长对象可以逐级收起。
- */
-
-/**
- * 判题结果的统一上报（通过与否都写）：完整详情写入输出通道（输入/输出/预期/
- * 运行时间/内存/错误信息 + 原始判题响应），右下角 toast 只留一行简讯，
- * 附"查看判题详情"，提交场景再附"在浏览器打开"直达官方判题页。
- * 编译/运行时错误文本同时写编辑器诊断（波浪线 + 问题面板）。
- */
-
-/**
  * 用指定用例生成调试文件并启动调试（"本地调试"与"判题失败用例本地调试"共用）。
  * testCases / expectedOutputs 传入要写入驱动的用例输入与期望输出（失败用例调试时
  * 只比对该用例，不再拉题面提取示例期望）；customCaseSource 为 true 时非 Python
@@ -171,7 +125,8 @@ async function runDebugWithCases(
 	problem: any,
 	testCases: string,
 	expectedOutputs: string[],
-	customCaseSource: boolean
+	customCaseSource: boolean,
+	exampleInputs: unknown[][] = []
 ): Promise<void> {
 	const filePath = editor.document.uri.fsPath;
 	const dirPath = filePath.substring(0, filePath.lastIndexOf('\\') !== -1 ? filePath.lastIndexOf('\\') : filePath.lastIndexOf('/'));
@@ -188,7 +143,8 @@ async function runDebugWithCases(
 		testCases,
 		userCode,
 		filePath,
-		expectedOutputs
+		expectedOutputs,
+		customCaseSource ? [] : exampleInputs
 	);
 
 	if (!debugFile) {
@@ -308,15 +264,17 @@ async function runCustomCaseWith(api: LeetCodeApi, problem: any, solutionPath: s
 
 			const interpretId = result.interpret_id;
 			if (!interpretId) {
-				vscode.window.showErrorMessage('自定义用例测试失败: ' + JSON.stringify(result));
+				// 只弹摘要，完整响应写输出通道（整段大 JSON 弹窗不可读）
+				judgeOutputChannel.appendLine(`[自定义用例] 发起失败原始响应: ${JSON.stringify(result)}`);
+				vscode.window.showErrorMessage('自定义用例测试失败: ' + oneLine(JSON.stringify(result), 160));
 				return;
 			}
 
-			// 轮询获取结果（退避至 ~90s，状态栏显示等待时长）
+			// 轮询获取结果（退避至预算上限，状态栏显示等待时长）
 			const check = await pollJudgeResult(api, interpretId);
 			if (check) {
 				reportJudgeResult('自定义用例', check, {
-					ok: check.run_success && !!check.correct_answer,
+					ok: !!check.run_success && !!check.correct_answer,
 					fileUri: vscode.Uri.file(solutionPath),
 					inputFallback: dataInput,
 					titleSlug: problem.titleSlug
@@ -338,7 +296,9 @@ async function runCustomCaseWith(api: LeetCodeApi, problem: any, solutionPath: s
  * "打开题目"流程完整走完（选语言、建文件）后更新——语言选择被取消、窗口重启等
  * 场景会残留上一题状态，导致运行/调试/提交落到错误题目。文件名解析失败或与
  * currentProblem 一致时原样返回（零行为变化）；不一致时按文件名重新拉取题面，
- * 并同步更新 currentProblem，保证后续操作一致。
+ * 并同步更新 currentProblem，保证后续操作一致。拉取题面失败/返回空时提示并返回
+ * null（调用方须中止——不能拿残留的 currentProblem 顶替，否则会把当前文件代码
+ * 运行/提交到上一道题）。
  */
 async function resolveProblemFromFile(
 	api: LeetCodeApi,
@@ -365,81 +325,187 @@ async function resolveProblemFromFile(
 		const extLang = langMap[ext];
 		if (currentProblem.lang === 'python' && extLang) {
 			const healed = { ...currentProblem, lang: extLang };
-			context.workspaceState.update('currentProblem', healed);
+			await context.workspaceState.update('currentProblem', healed);
 			return healed;
 		}
 		return currentProblem;
 	}
+	// 文件名指向另一道题（非 Hot 100 的外部文件都在此路径）：必须按该题身份继续，
+	// 拉取失败绝不能回退 currentProblem——否则会把当前文件代码运行/提交到上一题
+	let data: any;
 	try {
-		const data = await api.getQuestionContent(parsed.titleSlug);
-		const q = data?.data?.question;
-		if (!q) {
-			return currentProblem;
-		}
-		const problem = {
-			titleSlug: q.titleSlug || parsed.titleSlug,
-			questionId: q.questionId,
-			lang: langMap[ext] || currentProblem.lang,
-			testCases: q.exampleTestcases || q.sampleTestCase || currentProblem.testCases || ''
-		};
-		context.workspaceState.update('currentProblem', problem);
-		return problem;
-	} catch {
-		return currentProblem;
+		data = await api.getQuestionContent(parsed.titleSlug);
+	} catch (error) {
+		vscode.window.showErrorMessage(
+			`无法解析当前文件对应的题目（${parsed.titleSlug}：${errMsg(error)}），已中止本次操作，避免运行/提交到错误的题目`
+		);
+		return null;
 	}
+	const q = data?.data?.question;
+	if (!q) {
+		vscode.window.showErrorMessage(
+			`无法解析当前文件对应的题目（${parsed.titleSlug}：接口未返回题面数据），已中止本次操作，避免运行/提交到错误的题目`
+		);
+		return null;
+	}
+	const problem = {
+		titleSlug: q.titleSlug || parsed.titleSlug,
+		questionId: q.questionId,
+		lang: langMap[ext] || currentProblem.lang,
+		testCases: q.exampleTestcases || q.sampleTestCase || currentProblem.testCases || ''
+	};
+	await context.workspaceState.update('currentProblem', problem);
+	return problem;
 }
 
 /**
- * 把 HTML 中的 http(s) 图片下载到本地缓存，并替换为 webview 可访问的 asWebviewUri，
- * 避免 webview 加载外部图片失败（如 assets.leetcode.com 等域名）。
+ * 把云端某次提交的代码恢复到本地题解文件（跨设备代码同步：A 机提交 → B 机登录同账号后恢复）。
+ * 文件名沿用 {题号}_{slug}.{ext} 约定（解析/判题流程通用）；本地已有同题文件时询问覆盖/另存副本。
+ * 恢复成功后同步更新 currentProblem，后续测试/提交直接作用于恢复出的文件。
+ * 返回恢复写入的语言 slug（失败/取消返回 null，调用方可回退模板流程）。
  */
+async function restoreSubmissionToLocal(
+	context: vscode.ExtensionContext,
+	api: LeetCodeApi,
+	problem: any,
+	wsHint: { filePath?: string },
+	submission: { id: string; lang: string; statusDisplay: string }
+): Promise<string | null> {
+	const ext = getExtension(submission.lang);
+	if (ext === 'txt') {
+		vscode.window.showWarningMessage(`暂不支持恢复 ${submission.lang} 语言的代码（无文件扩展名映射）`);
+		return null;
+	}
+	const detail = await api.getSubmissionDetail(submission.id);
+	if (!detail || !detail.code) {
+		vscode.window.showErrorMessage(`未能获取提交 ${submission.id} 的代码，请稍后重试`);
+		return null;
+	}
+	const hotq = HOT_100_LIST.find(q => q.titleSlug === problem.titleSlug);
+	const idPart = hotq?.frontendQuestionId || (problem.questionId ? String(problem.questionId) : '0');
+	const ws = resolveTargetWorkspaceFolder(wsHint?.filePath);
+	if (!ws) {
+		vscode.window.showErrorMessage('请先打开一个工作区文件夹');
+		return null;
+	}
+	const dir = vscode.Uri.joinPath(ws.uri, 'leetcode');
+	try {
+		await vscode.workspace.fs.createDirectory(dir);
+	} catch {
+		// 目录创建失败时由后续 writeFile 透出真实错误
+	}
+	const fileName = `${idPart}_${problem.titleSlug}.${ext}`;
+	const fileUri = vscode.Uri.joinPath(dir, fileName);
+	let exists = false;
+	try {
+		await vscode.workspace.fs.stat(fileUri);
+		exists = true;
+	} catch {
+		exists = false;
+	}
+	let target = fileUri;
+	if (exists) {
+		const copyName = `${idPart}_${problem.titleSlug}_restored.${ext}`;
+		const choice = await vscode.window.showQuickPick(
+			[
+				{ label: '覆盖现有文件', description: fileUri.fsPath },
+				{ label: `另存为副本（${copyName}）`, description: '保留当前文件，副本仍可按同题运行/提交' }
+			],
+			{ title: '本地已有同题代码文件', placeHolder: '选择处理方式' }
+		);
+		if (!choice) {
+			return null;
+		}
+		if (choice.label.startsWith('另存为副本')) {
+			target = vscode.Uri.joinPath(dir, copyName);
+		}
+	}
+	await vscode.workspace.fs.writeFile(target, Buffer.from(detail.code, 'utf8'));
+	const doc = await vscode.workspace.openTextDocument(target);
+	await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+	await context.workspaceState.update('currentProblem', {
+		titleSlug: problem.titleSlug,
+		questionId: problem.questionId,
+		lang: detail.lang || submission.lang,
+		filePath: target.fsPath,
+		testCases: problem.testCases || ''
+	});
+	vscode.window.showInformationMessage(
+		`已恢复 ${submission.statusDisplay || '提交'} 代码到 leetcode/${target.fsPath.split(/[\\/]/).pop() || fileName}`
+	);
+	return detail.lang || submission.lang;
+}
 
 /**
- * 把题解内容中少量内联 HTML 还原为 Markdown 文本，避免静态渲染时残留原始标签。
- * 只处理安全的常用标签；iframe 等占位区域由调用方在渲染前移除。
+ * 打开题目时尝试跨设备同步：本机没有该题代码文件、云端却有历史提交时，
+ * 询问是否从云端恢复代码（语言以云端提交为准，不再弹语言选择器）。
+ * 返回恢复写入的语言 slug；无提交/未登录/用户选择模板或取消时返回 null（走模板流程）。
  */
-
-
-/** 代码语言优先级：Python3/Python > C/C++ > 其他（官方题解每组只展示一种语言时使用） */
-
-/** 语言名显示规范化：py → Python、cpp → C++、golang → Go 等（标签页与代码块标注用） */
-
-/**
- * 行内 Markdown 渲染（图片/视频/链接/行内代码/粗体/斜体/删除线），文本先做 HTML 转义。
- * videoPageUrl 存在时，视频题解（![xxx.mp4](资产id)）渲染为可点击播放入口——
- * 视频在 LeetCode 内部 CDN 上且带防盗链，webview 无法直接内嵌播放。
- */
-
-
-/** 官方题解标签页语言优先级：Python → C/C++ → Java → 其他（同优先级保持原文顺序） */
-
-/**
- * 多语言代码块 → 语言标签页（保留全部语言，点击切换，类似网页版题解）。
- * preferredFirst 为 true 时按 Python → C/C++ → Java → 其他 的顺序排列（用于官方题解）。
- */
-
-/** 相邻代码块组中，按优先级挑一种语言（Python3/Python → C/C++ → 其他首个） */
-
-/**
- * 轻量级 Markdown → HTML 渲染器（扩展端静态渲染，不依赖 webview 的 CDN marked）。
- * 支持标题、段落、行内格式、图片/链接、列表、引用、分隔线、表格与围栏代码块。
- * codeMode:
- *   - 'preferred'：相邻的多语言代码块只保留一种（Python3/Python → C/C++ → 其他首个）；
- *   - 'all'：保留全部代码块并按语言生成标签页（preferredFirst 时优先语言排首位并默认选中，
- *     用于官方题解，接近网页版的多语言切换体验；社区题解保持原文顺序）。
- */
+async function tryRestoreOnOpen(
+	context: vscode.ExtensionContext,
+	api: LeetCodeApi,
+	q: { titleSlug: string; questionId: string; exampleTestcases?: string; sampleTestCase?: string },
+	workspaceFolder: string
+): Promise<string | null> {
+	let subs: Awaited<ReturnType<LeetCodeApi['getSubmissions']>>;
+	try {
+		subs = await api.getSubmissions(q.titleSlug, SUBMISSION_LIST_LIMIT);
+	} catch {
+		return null; // 未登录/网络异常：静默回退模板流程
+	}
+	if (subs.length === 0) {
+		return null;
+	}
+	const problem = {
+		titleSlug: q.titleSlug,
+		questionId: q.questionId,
+		testCases: q.exampleTestcases || q.sampleTestCase || ''
+	};
+	// 固定把恢复写进 openProblem 已解析的目标工作区（多根工作区时与模板文件同目录）
+	const currentProblemForWs = { filePath: `${workspaceFolder}/leetcode` };
+	const latestAc = subs.find(s => s.statusDisplay === 'Accepted');
+	const options: (vscode.QuickPickItem & { sub?: (typeof subs)[number] })[] = [];
+	if (latestAc) {
+		options.push({
+			label: `📥 恢复最近通过的提交（${langDisplayName(latestAc.lang)}）`,
+			description: latestAc.timestamp ? formatFailedAt(latestAc.timestamp * 1000) : '',
+			sub: latestAc
+		});
+	}
+	options.push({ label: '📥 从提交历史中选择恢复…' });
+	options.push({ label: '使用官方模板新建（本次不恢复）' });
+	const pick = await vscode.window.showQuickPick(options, {
+		title: `本机无「${q.titleSlug}」的代码文件${latestAc ? '，云端有已通过的提交' : '，云端有历史提交'}`,
+		placeHolder: '是否从云端恢复代码（跨设备同步）？'
+	});
+	if (!pick) {
+		return null; // Esc 与「使用模板」同义
+	}
+	let chosen = pick.sub;
+	if (!chosen) {
+		if (!pick.label.startsWith('📥')) {
+			return null; // 使用官方模板新建
+		}
+		const historyItems = subs.map(s => ({
+			label: `${SUBMISSION_STATUS_ZH[s.statusDisplay] || s.statusDisplay || '未知'} · ${langDisplayName(s.lang)}`,
+			description: s.timestamp ? formatFailedAt(s.timestamp * 1000) : '',
+			sub: s
+		}));
+		const historyPick = await vscode.window.showQuickPick(historyItems, {
+			title: `${q.titleSlug} 提交历史`,
+			placeHolder: '选择要恢复到本地的提交'
+		});
+		if (!historyPick) {
+			return null;
+		}
+		chosen = historyPick.sub;
+	}
+	const restoredLang = await restoreSubmissionToLocal(context, api, problem, currentProblemForWs, chosen);
+	return restoredLang ?? null;
+}
 
 // 状态栏项
 let statusBarItem: vscode.StatusBarItem;
-
-// highlight.js 本地资源（vendor/ 随扩展打包，.vscodeignore 未排除），
-// 在扩展端执行并直接产出高亮 HTML，webview 无需再运行任何高亮脚本
-
-
-/** 在扩展端执行 vendored highlight.js（函数包裹避免 var 泄漏到全局），失败返回 null */
-
-/** 语言标识 → highlight.js 语言名（py → python、cpp → cpp 等） */
-
 
 // ffmpeg.wasm 核心（扩展端运行，TS→MP4 纯 remux；webview 只做原生播放）
 let ffmpegCorePromise: Promise<any> | null = null;
@@ -472,7 +538,8 @@ function getFfmpegCore(context: vscode.ExtensionContext): Promise<any> {
 	return ffmpegCorePromise;
 }
 
-// 视频播放资源（阿里云 Aliplayer + hls.js，本地 vendor，不依赖 CDN）
+/** 提交历史拉取条数 */
+const SUBMISSION_LIST_LIMIT = 20;
 
 /** 提交状态显示名（submissionList 的 statusDisplay 为英文枚举） */
 const SUBMISSION_STATUS_ZH: Record<string, string> = {
@@ -541,8 +608,6 @@ function resolveTargetWorkspaceFolder(relatedPath?: string): vscode.WorkspaceFol
 }
 
 export function activate(context: vscode.ExtensionContext) {
-	console.log('LeetCode Extension is now active!');
-
 	// 在扩展端加载 vendored highlight.js，题解代码高亮不依赖网络与 webview 脚本
 	initHighlightJs(context);
 
@@ -646,32 +711,17 @@ export function activate(context: vscode.ExtensionContext) {
 		await vscode.commands.executeCommand('leetcode.openProblem', buildQuestion(chosen));
 	}));
 
-	// 每日一题：questionOfToday（可能不在 Hot 100 内，题面/判题流程通用）
+	// 每日一题：按日期从 Hot 100 中确定性随机抽一题（每天固定一题、跨天轮换，
+	// 无需登录/网络；不再用官网今日题目，避免抽到 Hot 100 之外的题）
 	context.subscriptions.push(vscode.commands.registerCommand('leetcode.dailyQuestion', async () => {
-		try {
-			const daily = await leetCodeApi.getDailyQuestion();
-			if (!daily || !daily.titleSlug) {
-				vscode.window.showWarningMessage('未能获取每日一题（接口不可用或未登录），可稍后重试');
-				return;
-			}
-			const inHot100 = HOT_100_IDS.has(daily.frontendQuestionId);
-			const diffZh = isDifficultyLevel(daily.difficulty) ? DIFFICULTY_ZH[daily.difficulty] : daily.difficulty || '';
-			vscode.window.showInformationMessage(
-				`每日一题：${daily.frontendQuestionId || ''}. ${daily.translatedTitle || daily.title}（${diffZh}）${inHot100 ? '' : '｜不在 Hot 100 内'}`
-			);
-			await vscode.commands.executeCommand('leetcode.openProblem', {
-				frontendQuestionId: daily.frontendQuestionId,
-				title: daily.translatedTitle || daily.title,
-				titleSlug: daily.titleSlug,
-				difficulty: daily.difficulty,
-				status: null
-			} as Question);
-		} catch (error) {
-			vscode.window.showErrorMessage(`获取每日一题失败: ${errMsg(error)}`);
-		}
+		const daily = pickDailyQuestion(localDateStr());
+		vscode.window.showInformationMessage(
+			`每日一题（Hot 100 随机）：${daily.frontendQuestionId}. ${daily.titleCn}（${isDifficultyLevel(daily.difficulty) ? DIFFICULTY_ZH[daily.difficulty] : daily.difficulty}）`
+		);
+		await vscode.commands.executeCommand('leetcode.openProblem', buildQuestion(daily));
 	}));
 
-	// 提交历史：最近 20 条，点击在浏览器打开对应提交页
+	// 提交历史：最近 20 条，选中后可恢复代码到本地（跨设备同步）或在浏览器打开提交页
 	context.subscriptions.push(vscode.commands.registerCommand('leetcode.viewSubmissions', async () => {
 		const currentProblem = context.workspaceState.get<any>('currentProblem');
 		if (!currentProblem) {
@@ -683,32 +733,55 @@ export function activate(context: vscode.ExtensionContext) {
 		if (editor) {
 			problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
 		}
+		if (!problem) {
+			return;
+		}
 		try {
-			const subs = await leetCodeApi.getSubmissions(problem.titleSlug, 20);
+			const subs = await leetCodeApi.getSubmissions(problem.titleSlug, SUBMISSION_LIST_LIMIT);
 			if (subs.length === 0) {
-				vscode.window.showInformationMessage('该题暂无提交记录');
+				vscode.window.showInformationMessage('该题暂无提交记录（在线提交过的代码会保存在云端，换设备登录后可恢复）');
 				return;
 			}
 			const items = subs.map(s => ({
 				label: `${SUBMISSION_STATUS_ZH[s.statusDisplay] || s.statusDisplay || '未知'} · ${langDisplayName(s.lang)}`,
 				description: s.timestamp ? formatFailedAt(s.timestamp * 1000) : '',
 				detail: [s.runtime, s.memory].filter(Boolean).join(' · ') || undefined,
-				url: s.url
+				sub: { id: s.id, lang: s.lang, url: s.url, statusDisplay: s.statusDisplay }
 			}));
 			const pick = await vscode.window.showQuickPick(items, {
 				title: `${problem.titleSlug} 提交历史（最近 ${subs.length} 条）`,
-				placeHolder: '点击在浏览器打开对应提交'
+				placeHolder: '选择一次提交：可恢复代码到本地或打开浏览器'
 			});
-			if (pick?.url && pick.url.startsWith('http')) {
-				vscode.env.openExternal(vscode.Uri.parse(pick.url));
+			if (!pick) {
+				return;
 			}
+			const action = await vscode.window.showQuickPick(
+				[
+					{
+						label: '📥 恢复代码到本地文件',
+						description: `保存为 leetcode/${(HOT_100_LIST.find(q => q.titleSlug === problem.titleSlug)?.frontendQuestionId || problem.questionId || '0')}_${problem.titleSlug}.${getExtension(pick.sub.lang)}`
+					},
+					{ label: '🌐 在浏览器打开提交详情', description: '默认提交页' }
+				],
+				{ title: `提交 ${pick.sub.id} · ${pick.label.split(' · ')[0]}`, placeHolder: '选择操作' }
+			);
+			if (!action) {
+				return;
+			}
+			if (!action.label.startsWith('📥')) {
+				if (pick.sub.url && pick.sub.url.startsWith('http')) {
+					vscode.env.openExternal(vscode.Uri.parse(pick.sub.url));
+				}
+				return;
+			}
+			await restoreSubmissionToLocal(context, leetCodeApi, problem, currentProblem, pick.sub);
 		} catch (error) {
 			vscode.window.showErrorMessage(`获取提交历史失败: ${errMsg(error)}`);
 		}
 	}));
 
 	// 下一题：按当前分组方式的顺序前进（难度模式下即同难度题号升序的后一题），
-	// 已打开非 Hot 100 题（如每日一题）时回到第一题
+	// 已打开非 Hot 100 题（如外部导入的同格式题解文件）时回到第一题
 	context.subscriptions.push(vscode.commands.registerCommand('leetcode.nextProblem', async () => {
 		const currentProblem = context.workspaceState.get<any>('currentProblem');
 		if (!currentProblem) {
@@ -719,6 +792,9 @@ export function activate(context: vscode.ExtensionContext) {
 		const editor = await getProblemCodeEditor(context);
 		if (editor) {
 			problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
+		}
+		if (!problem) {
+			return;
 		}
 		const ordered = hot100Provider.ordered();
 		const cur = ordered.find(q => q.titleSlug === problem.titleSlug);
@@ -761,6 +837,9 @@ export function activate(context: vscode.ExtensionContext) {
 				if (editor) {
 					problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
 				}
+				if (!problem) {
+					return;
+				}
 				id = HOT_100_LIST.find(q => q.titleSlug === problem.titleSlug)?.frontendQuestionId;
 			}
 		}
@@ -789,6 +868,9 @@ export function activate(context: vscode.ExtensionContext) {
 			if (editor) {
 				problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
 			}
+			if (!problem) {
+				return;
+			}
 			const q = HOT_100_LIST.find(x => x.titleSlug === problem.titleSlug);
 			frontendQuestionId = q?.frontendQuestionId;
 			titleSlug = problem.titleSlug;
@@ -797,7 +879,7 @@ export function activate(context: vscode.ExtensionContext) {
 		if (!titleSlug) {
 			return;
 		}
-		const ws = resolveTargetWorkspaceFolder(currentProblem?.filePath);
+		const ws = resolveTargetWorkspaceFolder();
 		if (!ws) {
 			vscode.window.showErrorMessage('请先打开一个工作区文件夹');
 			return;
@@ -875,7 +957,7 @@ export function activate(context: vscode.ExtensionContext) {
 	}));
 
 	// 服务端判定会话失效时主动提示重新登录（toast 内建限频，避免每个过期请求都弹）
-	leetCodeApi.onSessionExpired = () => notifySessionExpired();
+	leetCodeApi.onSessionExpired(() => notifySessionExpired());
 
 	// 已存 Cookie 时后台校验一次会话有效性：覆盖"上次存的 Cookie 本次启动已过期、
 	// 但用户还没触发任何需要登录的操作"的空窗（校验失败/网络异常静默，不打扰）
@@ -903,7 +985,7 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(judgeOutputChannel);
 	context.subscriptions.push(judgeStatusBar);
 	// 扩展停用时关闭已打开的题面/题解面板（Map 里只保留活跃面板的语义靠 onDidDispose 维护）
-	context.subscriptions.push({ dispose: () => { problemPanels.forEach(p => p.dispose()); solutionPanels.forEach(p => p.dispose()); } });
+	context.subscriptions.push({ dispose: () => { problemPanels.forEach(p => p.dispose()); } });
 	updateStatusBar(authManager);
 
 	// 监听登录状态变化
@@ -943,6 +1025,7 @@ export function activate(context: vscode.ExtensionContext) {
 			<head>
 				<meta charset="UTF-8">
 				<meta name="viewport" content="width=device-width, initial-scale=1.0">
+				<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:;">
 				<title>LeetCode 登录</title>
 				<style>
 					body {
@@ -1222,7 +1305,8 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 
 	// ==================== 打开题目命令 ====================
-	const openProblemDisposable = vscode.commands.registerCommand('leetcode.openProblem', async (question: Question) => {
+	const openProblemDisposable = vscode.commands.registerCommand('leetcode.openProblem', async (question: Question, opts?: { tab?: 'problem' | 'solution' }) => {
+		const initialTab: 'problem' | 'solution' = opts?.tab === 'solution' ? 'solution' : 'problem';
 		// 每题只允许一个题面页：已有面板直接聚焦（同步判断，先于任何网络请求），
 		// 再用同步占位拦住快速双击的第二个调用
 		const panelKey = String(question.titleSlug);
@@ -1264,12 +1348,18 @@ export function activate(context: vscode.ExtensionContext) {
 					}
 				}
 				if (langSlug === null) {
-					const selectedLanguage = await selectLanguage(q.codeSnippets);
-					if (!selectedLanguage) {
-						return; // 用户取消了选择
+					// 跨设备同步：本机无该题代码文件、云端有历史提交时先询问是否恢复
+					const restoredLang = await tryRestoreOnOpen(context, leetCodeApi, q, workspaceFolder);
+					if (restoredLang) {
+						langSlug = restoredLang;
+					} else {
+						const selectedLanguage = await selectLanguage(q.codeSnippets);
+						if (!selectedLanguage) {
+							return; // 用户取消了选择
+						}
+						langSlug = selectedLanguage.langSlug;
+						snippetCode = selectedLanguage.code;
 					}
-					langSlug = selectedLanguage.langSlug;
-					snippetCode = selectedLanguage.code;
 				}
 
 				const ext = getExtension(langSlug);
@@ -1306,7 +1396,7 @@ export function activate(context: vscode.ExtensionContext) {
 				await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
 
 				// 存储当前题目信息用于提交
-				context.workspaceState.update('currentProblem', {
+				await context.workspaceState.update('currentProblem', {
 					titleSlug: q.titleSlug,
 					questionId: q.questionId,
 					lang: langSlug,
@@ -1327,18 +1417,13 @@ export function activate(context: vscode.ExtensionContext) {
 				// 使用中文内容（translatedContent），如果没有则使用英文
 				let questionContent = q.translatedContent || q.content;
 				const title = q.translatedTitle || q.title;
-				const difficultyMap: Record<string, string> = {
-					'Easy': '简单',
-					'Medium': '中等',
-					'Hard': '困难'
-				};
-				const difficulty = difficultyMap[q.difficulty] || q.difficulty;
+				const difficulty = difficultyZhOf(String(q.difficulty || '')) || q.difficulty;
 
 				// 生成带标签页的面板HTML
 
 					// 题目内容中的外链图片下载到本地缓存（webview 直连外部图可能失败）
 					questionContent = await localizeContentImages(questionContent, panel, context, leetCodeApi);
-					panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'problem');
+					safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'problem'));
 
 				// 处理消息（外层兜底：任何异常都提示用户，避免静默失败）
 				panel.webview.onDidReceiveMessage(async (message: PanelToExtensionMessage) => {
@@ -1349,15 +1434,20 @@ export function activate(context: vscode.ExtensionContext) {
 					}
 				});
 
+				// viewSolution 入口直达题解页：面板就绪后立即触发一次题解加载（与面板内消息同款流程）
+				if (initialTab === 'solution') {
+					void handlePanelMessage({ type: 'loadSolution' } as PanelToExtensionMessage, panel, q);
+				}
+
 				/**
-				 * 题解面板消息处理（抽出来便于外层统一兜底错误提示）
+				 * 面板消息统一分发（题面/题解合一面板的全部消息；抽出便于外层统一兜底错误提示）
 				 */
 				async function handlePanelMessage(message: PanelToExtensionMessage, panel: vscode.WebviewPanel, q: any) {
 					if (message.type === 'loadSolution') {
 						// 刷新：先立即渲染缓存内容，后台重取；网络慢/波动时不再长时间挂在"加载题解中"
 						const cachedSolution = solutionHtmlCache.get(q.titleSlug);
 						if (cachedSolution) {
-							panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', cachedSolution);
+							safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', cachedSolution));
 						}
 						const loadStart = Date.now();
 						const stepLog = (label: string) => { console.log(`[loadSolution ${q.titleSlug}] ${label}: ${Date.now() - loadStart}ms`); };
@@ -1442,9 +1532,9 @@ if (article && article.content) {
 									const author = article.author?.profile?.realName || article.author?.username || '匿名';
 									const tags = article.byLeetcode ? '👑 官方 ' : '';
 									return `
-										<div class="article-item" onclick="openArticle('${article.slug}')">
+										<div class="article-item" data-slug="${escapeHtml(article.slug)}">
 											<div class="article-title">${escapeHtml(article.title)}</div>
-											<div class="article-meta">${tags}👍 ${article.upvoteCount} | 作者: ${escapeHtml(author)}</div>
+											<div class="article-meta">${tags}👍 ${escapeHtml(String(article.upvoteCount ?? ''))} | 作者: ${escapeHtml(author)}</div>
 										</div>
 									`;
 								}).join('');
@@ -1500,7 +1590,7 @@ if (topArticle && topArticle.content) {
 									stepLog('same content, page already shown');
 								} else {
 									solutionHtmlCache.set(q.titleSlug, solutionHtml);
-									panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', solutionHtml);
+									safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', solutionHtml));
 								}
 								stepLog('done');
 							})(), 60000, '题解加载超时（60 秒）');
@@ -1513,9 +1603,9 @@ if (topArticle && topArticle.content) {
 							}
 							console.error(`[loadSolution ${q.titleSlug}] FAILED:`, error);
 							try {
-								panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', `<div class="loading">加载题解失败: ${escapeHtml(failMsg)}</div>`);
+								safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', `<div class="loading">加载题解失败: ${escapeHtml(failMsg)}</div>`));
 							} catch (e2) {
-								panel.webview.html = `<!DOCTYPE html><html><body><div class="loading">加载题解失败: ${escapeHtml(failMsg)}</div></body></html>`;
+								safeSetHtml(panel, `<!DOCTYPE html><html><body><div class="loading">加载题解失败: ${escapeHtml(failMsg)}</div></body></html>`);
 							}
 						}
 } else if (message.type === 'reloadProblem') {
@@ -1527,10 +1617,10 @@ if (topArticle && topArticle.content) {
 									Object.assign(q, fresh);
 									questionContent = fresh.translatedContent || fresh.content;
 								}
-								panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'problem');
+								safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'problem'));
 							} catch (error) {
 								vscode.window.showErrorMessage(`刷新题目描述失败: ${errMsg(error)}`);
-								panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'problem');
+								safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'problem'));
 							}
 						} else if (message.type === 'playVideo') {
 							try {
@@ -1552,9 +1642,14 @@ const playHolder: { value: { videoUrl: string; videoId: string; coverUrl: string
 								}
 								const dirUri = vscode.Uri.joinPath(context.globalStorageUri, 'video');
 								await vscode.workspace.fs.createDirectory(dirUri);
-const mp4Uri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '_v3.mp4');
-									const mp3Uri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '_v3.mp3');
-									const tsUri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '.ts');
+								// 缓存文件名用的 videoId 加白名单（防路径穿越；接口值不直接信任）
+								const videoId = String(meta.videoInfo.videoId).replace(/[^A-Za-z0-9_-]/g, '');
+								if (!videoId) {
+									throw new Error('无效的视频标识');
+								}
+const mp4Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp4');
+									const mp3Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp3');
+									const tsUri = vscode.Uri.joinPath(dirUri, videoId + '.ts');
 								let mp4Stat: vscode.FileStat | null = null;
 								let mp3Stat: vscode.FileStat | null = null;
 								try {
@@ -1671,7 +1766,7 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '_v3.mp4');
 										</div>
 									`;
 								articleHtml = await localizeContentImages(articleHtml, panel, context, leetCodeApi);
-									panel.webview.html = generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', articleHtml);
+									safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', articleHtml));
 							}
 						} catch (error) {
 							vscode.window.showErrorMessage(`加载题解失败: ${errMsg(error)}`);
@@ -1690,188 +1785,116 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, meta.videoInfo.videoId + '_v3.mp4');
 						} as Question);
 					}
 				}
+				} else {
+					vscode.window.showErrorMessage('未获取到题面数据（接口返回为空），请稍后重试');
+				}
+			} catch (error) {
+				vscode.window.showErrorMessage(`加载题目失败: ${errMsg(error)}`);
+			} finally {
+				pendingProblemOpens.delete(panelKey);
 			}
-		} catch (error) {
-			vscode.window.showErrorMessage(`加载题目失败: ${errMsg(error)}`);
-		} finally {
-			pendingProblemOpens.delete(panelKey);
-		}
 	});
 
-	// ==================== 运行测试命令 ====================
-	const testDisposable = vscode.commands.registerCommand('leetcode.test', async () => {
-		// 检查登录状态
+	// ==================== 测试 / 提交（共用判题流程） ====================
+	// 测试与提交共用：登录检查→按当前文件解析题目→保存→清诊断→占锁→轮询→上报
+	async function runJudgeFlow(kind: '测试' | '提交'): Promise<void> {
 		const isLoggedIn = await authManager.isLoggedIn();
 		if (!isLoggedIn) {
-			const login = await vscode.window.showWarningMessage(
-				'您需要先登录才能运行测试',
-				'登录'
-			);
+			const login = await vscode.window.showWarningMessage(`您需要先登录才能${kind === '提交' ? '提交代码' : '运行测试'}`, '登录');
 			if (login === '登录') {
 				vscode.commands.executeCommand('leetcode.login');
 			}
 			return;
 		}
-
 		const editor = await getProblemCodeEditor(context);
 		if (!editor) {
 			vscode.window.showErrorMessage('请先从题目列表打开一道题目，或聚焦题解代码文件后再试');
 			return;
 		}
-
 		const currentProblem = context.workspaceState.get<any>('currentProblem');
 		if (!currentProblem) {
 			vscode.window.showErrorMessage('请先从题目列表中打开一道题目');
 			return;
 		}
-
-		// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态导致测试错题
+		// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态导致判题错题
 		const problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
-
-		// 保存文件
+		// 解析失败（返回 null）时已提示：直接中止，防止把当前文件代码判题到错误的题目
+		if (!problem) {
+			return;
+		}
 		await editor.document.save();
 		const code = editor.document.getText();
 		// 重新运行时清除上一次的错误标注
 		errorDiagnostics.delete(editor.document.uri);
-
-		// 在途忙碌锁：判题发起前同步占位，防快速连点并发 runCode/覆盖判题详情
+		// 在途忙碌锁：判题发起前同步占位，防快速连点并发 runCode/重复提交
 		if (!tryBeginJudge()) {
 			return;
 		}
-		vscode.window.withProgress({
+		const budgetSec = Math.round(JUDGE_POLL_BUDGET_MS / 1000);
+		await vscode.window.withProgress({
 			location: vscode.ProgressLocation.Notification,
-			title: "正在运行测试...",
+			title: kind === '提交' ? '正在提交到 LeetCode...' : '正在运行测试...',
 			cancellable: false
 		}, async () => {
 			try {
-				const result = await leetCodeApi.runCode(
-					problem.titleSlug,
-					problem.questionId,
-					problem.lang,
-					code,
-					problem.testCases || ''
-				);
-
-				const interpretId = result.interpret_id;
-				if (!interpretId) {
-					vscode.window.showErrorMessage('测试失败: ' + JSON.stringify(result));
+				const result = kind === '提交'
+					? await leetCodeApi.submitCode(problem.titleSlug, problem.questionId, problem.lang, code)
+					: await leetCodeApi.runCode(problem.titleSlug, problem.questionId, problem.lang, code, problem.testCases || '');
+				const judgeId = kind === '提交' ? result.submission_id : result.interpret_id;
+				if (!judgeId) {
+					// 只弹摘要，完整响应写输出通道（整段大 JSON 弹窗不可读）
+					judgeOutputChannel.appendLine(`[${kind}] 发起失败原始响应: ${JSON.stringify(result)}`);
+					vscode.window.showErrorMessage(`${kind}失败: ` + oneLine(JSON.stringify(result), 160));
 					return;
 				}
-
-				// 轮询获取结果（退避至 ~90s，状态栏显示等待时长）
-const check = await pollJudgeResult(leetCodeApi, interpretId);
-					if (check) {
-						reportJudgeResult('测试', check, {
-							ok: check.run_success && !!check.correct_answer,
-							fileUri: editor.document.uri,
-							inputFallback: problem.testCases,
-							titleSlug: problem.titleSlug
+				const submissionUrl = kind === '提交'
+					? `https://leetcode.cn/problems/${problem.titleSlug}/submissions/${judgeId}/`
+					: undefined;
+				// 轮询获取结果（退避至预算上限，状态栏显示等待时长）
+				const check = await pollJudgeResult(leetCodeApi, judgeId);
+				if (check) {
+					const accepted = kind === '提交'
+						? check.status_msg === 'Accepted'
+						: !!check.run_success && !!check.correct_answer;
+					reportJudgeResult(kind, check, {
+						ok: accepted,
+						fileUri: editor.document.uri,
+						inputFallback: kind === '测试' ? problem.testCases : undefined,
+						submissionUrl,
+						titleSlug: problem.titleSlug
+					});
+					if (kind === '提交') {
+						// 提交后更新侧栏状态（通过=已解决并移出错题队列，失败=尝试过并记录错题）
+						hot100Provider.recordJudgeResult(problem.titleSlug, {
+							solved: accepted,
+							reason: check.status_msg,
+							recordWrong: true
 						});
+					} else {
 						// 测试（含通过）只算"尝试过"，不算"已解决"（以提交结果为准）
 						hot100Provider.recordJudgeResult(problem.titleSlug, { solved: false });
-					} else {
-					vscode.window.showWarningMessage('测试超时：判题未在 90 秒内返回，可稍后重试');
-				}
-			} catch (error) {
-				vscode.window.showErrorMessage(`测试出错: ${errMsg(error)}`);
-			} finally {
-				releaseJudge();
-			}
-		});
-	});
-
-	// ==================== 提交代码命令 ====================
-	const submitDisposable = vscode.commands.registerCommand('leetcode.submit', async () => {
-		// 检查登录状态
-		const isLoggedIn = await authManager.isLoggedIn();
-		if (!isLoggedIn) {
-			const login = await vscode.window.showWarningMessage(
-				'您需要先登录才能提交代码',
-				'登录'
-			);
-			if (login === '登录') {
-				vscode.commands.executeCommand('leetcode.login');
-			}
-			return;
-		}
-
-		const editor = await getProblemCodeEditor(context);
-		if (!editor) {
-			vscode.window.showErrorMessage('请先从题目列表打开一道题目，或聚焦题解代码文件后再试');
-			return;
-		}
-
-		const currentProblem = context.workspaceState.get<any>('currentProblem');
-		if (!currentProblem) {
-			vscode.window.showErrorMessage('请先从题目列表中打开一道题目');
-			return;
-		}
-
-		// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态导致提交错题
-		const problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
-
-		// 保存文件
-		await editor.document.save();
-		const code = editor.document.getText();
-		// 重新提交时清除上一次的错误标注
-		errorDiagnostics.delete(editor.document.uri);
-
-		// 在途忙碌锁：判题发起前同步占位，防快速连点重复提交
-		if (!tryBeginJudge()) {
-			return;
-		}
-		vscode.window.withProgress({
-			location: vscode.ProgressLocation.Notification,
-			title: "正在提交到 LeetCode...",
-			cancellable: false
-		}, async () => {
-			try {
-				const result = await leetCodeApi.submitCode(
-					problem.titleSlug,
-					problem.questionId,
-					problem.lang,
-					code
-				);
-
-				const submissionId = result.submission_id;
-				if (!submissionId) {
-					vscode.window.showErrorMessage('提交失败: ' + JSON.stringify(result));
-					return;
-				}
-				const submissionUrl = `https://leetcode.cn/problems/${problem.titleSlug}/submissions/${submissionId}/`;
-
-				// 轮询获取结果（退避至 ~90s，状态栏显示等待时长）
-				const check = await pollJudgeResult(leetCodeApi, submissionId);
-// 提交代码后：更新侧栏状态（通过=已解决并移出错题队列，失败=尝试过并记录错题）
-					if (check) {
-							const accepted = check.status_msg === 'Accepted';
-							reportJudgeResult('提交', check, {
-								ok: accepted,
-								fileUri: editor.document.uri,
-								submissionUrl,
-								titleSlug: problem.titleSlug
-							});
-							hot100Provider.recordJudgeResult(problem.titleSlug, {
-								solved: accepted,
-								reason: check.status_msg,
-								recordWrong: true
-							});
-						} else {
+					}
+				} else if (kind === '提交' && submissionUrl) {
 					const choice = await vscode.window.showWarningMessage(
-						'提交超时：判题未在 90 秒内返回，结果可在 LeetCode 提交页查看',
+						`提交超时：判题未在 ${budgetSec} 秒内返回，结果可在 LeetCode 提交页查看`,
 						'打开提交页'
 					);
 					if (choice === '打开提交页') {
 						vscode.env.openExternal(vscode.Uri.parse(submissionUrl));
 					}
+				} else {
+					vscode.window.showWarningMessage(`测试超时：判题未在 ${budgetSec} 秒内返回，可稍后重试`);
 				}
 			} catch (error) {
-				vscode.window.showErrorMessage(`提交出错: ${errMsg(error)}`);
+				vscode.window.showErrorMessage(`${kind}出错: ${errMsg(error)}`);
 			} finally {
 				releaseJudge();
 			}
 		});
-	});
+	}
+
+	const testDisposable = vscode.commands.registerCommand('leetcode.test', () => runJudgeFlow('测试'));
+	const submitDisposable = vscode.commands.registerCommand('leetcode.submit', () => runJudgeFlow('提交'));
 
 	// ==================== 创建调试文件命令 ====================
 	const debugDisposable = vscode.commands.registerCommand('leetcode.debug', async () => {
@@ -1894,23 +1917,31 @@ const check = await pollJudgeResult(leetCodeApi, interpretId);
 			path.basename(editor.document.uri.fsPath),
 			currentProblem
 		);
+		if (!problem) {
+			return;
+		}
 
 		// 拉取题面以提取各示例的期望输出（本地运行/调试时逐示例比对）
 		let expectedOutputs: string[] = [];
+		let exampleInputs: unknown[][] = [];
 		try {
 			const questionData = await leetCodeApi.getQuestionContent(problem.titleSlug);
 			const question = questionData?.data?.question;
-			expectedOutputs = extractExpectedOutputs(question?.translatedContent || question?.content || '');
+			const content = question?.translatedContent || question?.content || '';
+			expectedOutputs = extractExpectedOutputs(content);
+			exampleInputs = extractExampleInputs(content);
 		} catch {
 			// 拿不到期望输出时仅运行不比对
 		}
 
-		await runDebugWithCases(editor, problem, problem.testCases || '', expectedOutputs, false);
+		await runDebugWithCases(editor, problem, problem.testCases || '', expectedOutputs, false, exampleInputs);
 	});
 
 	// ==================== 用判题失败用例本地调试命令 ====================
 	const debugFailedDisposable = vscode.commands.registerCommand('leetcode.debugFailedCase', async () => {
-		const failedCases = getLastJudgeCases()?.cases?.filter(c => !c.passed && c.known && c.input) ?? [];
+		// 读一次判题快照复用（两次读取之间可能插入新判题，导致失败用例与防串题校验来自不同轮）
+		const lastJudgeForCase = getLastJudgeCases();
+		const failedCases = lastJudgeForCase?.cases?.filter(c => !c.passed && c.known && c.input) ?? [];
 		if (failedCases.length === 0) {
 			const choice = await vscode.window.showInformationMessage(
 				'暂无可用判题失败用例。先运行测试/提交触发失败，或自定义用例测试失败后，可把用例带入本地调试',
@@ -1940,8 +1971,10 @@ const check = await pollJudgeResult(leetCodeApi, interpretId);
 			path.basename(editor.document.uri.fsPath),
 			currentProblem
 		);
+		if (!problem) {
+			return;
+		}
 		// 失败用例来自上次判题的题目；当前文件是另一题时不能混用（防用例套错函数）
-		const lastJudgeForCase = getLastJudgeCases();
 		if (lastJudgeForCase?.titleSlug && lastJudgeForCase.titleSlug !== problem.titleSlug) {
 			vscode.window.showWarningMessage(
 				`上次判题是「${lastJudgeForCase.titleSlug}」，与当前文件的「${problem.titleSlug}」不是同一题，请先打开对应题解文件`
@@ -2007,6 +2040,9 @@ const check = await pollJudgeResult(leetCodeApi, interpretId);
 			// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态导致用例套错题
 			problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(solutionPath), currentProblem);
 		}
+		if (!problem) {
+			return;
+		}
 		if (!solutionPath) {
 			vscode.window.showErrorMessage('请先从题目列表打开一道题目，或聚焦题解代码文件后再试');
 			return;
@@ -2066,12 +2102,18 @@ const check = await pollJudgeResult(leetCodeApi, interpretId);
 			if (currentProblem && !fileName.endsWith('_debug.py')) {
 				// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态
 				const problem = await resolveProblemFromFile(leetCodeApi, context, fileName, currentProblem);
+				if (!problem) {
+					return;
+				}
 				// 拉取题面以提取各示例的期望输出（与调试入口一致，便于逐示例比对）
 				let expectedOutputs: string[] = [];
+				let exampleInputs: unknown[][] = [];
 				try {
 					const questionData = await leetCodeApi.getQuestionContent(problem.titleSlug);
 					const question = questionData?.data?.question;
-					expectedOutputs = extractExpectedOutputs(question?.translatedContent || question?.content || '');
+					const content = question?.translatedContent || question?.content || '';
+					expectedOutputs = extractExpectedOutputs(content);
+					exampleInputs = extractExampleInputs(content);
 				} catch {
 					// 拿不到期望输出时仅运行不比对
 				}
@@ -2082,7 +2124,8 @@ const check = await pollJudgeResult(leetCodeApi, interpretId);
 					problem.testCases || '',
 					editor.document.getText(),
 					filePath,
-					expectedOutputs
+					expectedOutputs,
+					exampleInputs
 				);
 				if (debugDriver) {
 					const driverPath = path.join(fileDir, 'debug', debugDriver.fileName);
@@ -2146,278 +2189,24 @@ const check = await pollJudgeResult(leetCodeApi, interpretId);
 		}
 	});
 
-	// ==================== 查看题解命令 ====================
-	const viewSolutionDisposable = vscode.commands.registerCommand('leetcode.viewSolution', async () => {
-		const currentProblem = context.workspaceState.get<any>('currentProblem');
-		if (!currentProblem) {
-			vscode.window.showErrorMessage('请先从题目列表中打开一道题目');
-			return;
-		}
-
-		// 题解面板：每题只允许一个。重复点击直接聚焦已有面板（同步判断，先于任何网络请求），
-		// 再用同步占位拦住快速双击的第二个调用
-		const earlyKey = String(currentProblem.titleSlug || '');
-		const existingEarlyPanel = solutionPanels.get(earlyKey);
-		if (existingEarlyPanel) {
-			existingEarlyPanel.reveal(vscode.ViewColumn.Two);
-			return;
-		}
-		if (pendingSolutionOpens.has(earlyKey)) {
-			return;
-		}
-		pendingSolutionOpens.add(earlyKey);
-
-		try {
-		// 以当前编辑的文件为准解析题目（与运行/调试/测试/提交同一套防错题逻辑）
-		const activeFileName = path.basename(vscode.window.activeTextEditor?.document.uri.fsPath || '');
-		const problem = await resolveProblemFromFile(leetCodeApi, context, activeFileName, currentProblem);
-		const titleSlug = problem.titleSlug;
-
-		const solutionKey = String(titleSlug);
-		const existingSolutionPanel = solutionPanels.get(solutionKey);
-		if (existingSolutionPanel) {
-			existingSolutionPanel.reveal(vscode.ViewColumn.Two);
-			return;
-		}
-
-		await vscode.window.withProgress({
-			location: vscode.ProgressLocation.Notification,
-			title: "正在加载题解...",
-			cancellable: false
-		}, async () => {
-			try {
-// 官方题解与社区题解列表并行拉取，避免串行叠加等待
-					const [officialData, communityData] = await Promise.all([
-						leetCodeApi.getOfficialSolution(titleSlug),
-						leetCodeApi.getSolutionArticles(titleSlug, 0, 10)
-					]);
-					const officialSolution = officialData?.data?.question?.solution;
-					const communityArticles = communityData?.data?.questionSolutionArticles?.edges || [];
-
-				const panel = vscode.window.createWebviewPanel(
-					'leetcodeSolution',
-					`题解 - ${titleSlug}`,
-					vscode.ViewColumn.Two,
-					{ enableScripts: true }
-				);
-				solutionPanels.set(solutionKey, panel);
-				panel.onDidDispose(() => solutionPanels.delete(solutionKey));
-
-				// 构建官方题解HTML
-				let officialHtml = '';
-				if (officialSolution && officialSolution.content && !officialSolution.paidOnly) {
-					officialHtml = `
-						<div class="section">
-							<h2>📖 官方题解</h2>
-							<div class="solution-content">${officialSolution.content}</div>
-						</div>
-					`;
-				} else if (officialSolution?.paidOnly) {
-					officialHtml = `
-						<div class="section">
-							<h2>📖 官方题解</h2>
-							<p class="paid-only">🔒 此题解为会员专享内容</p>
-						</div>
-					`;
-				}
-
-				// 构建社区题解列表HTML
-				let communityHtml = '';
-				if (communityArticles.length > 0) {
-					const articleItems = communityArticles.map((edge: any) => {
-						const article = edge.node;
-						const author = article.author?.profile?.realName || article.author?.username || '匿名';
-						const isOfficial = article.byLeetcode ? '👑 官方' : '';
-						const isPick = article.isEditorsPick ? '⭐ 精选' : '';
-						return `
-							<div class="article-item" onclick="openArticle('${article.slug}')">
-								<div class="article-title">${escapeHtml(article.title)}</div>
-								<div class="article-meta">
-									${isOfficial} ${isPick}
-									<span>👍 ${article.upvoteCount}</span>
-									<span>作者: ${escapeHtml(author)}</span>
-								</div>
-								<div class="article-summary">${article.summary || ''}</div>
-							</div>
-						`;
-					}).join('');
-
-					communityHtml = `
-						<div class="section">
-							<h2>💡 社区热门题解</h2>
-							<div class="article-list">${articleItems}</div>
-						</div>
-					`;
-				}
-
-				panel.webview.html = `
-					<!DOCTYPE html>
-					<html lang="zh-CN">
-					<head>
-						<meta charset="UTF-8">
-						<meta name="viewport" content="width=device-width, initial-scale=1.0">
-						<title>题解</title>
-						<style>
-							body {
-								font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-								padding: 20px;
-								line-height: 1.6;
-								color: var(--vscode-foreground);
-								background-color: var(--vscode-editor-background);
-							}
-							h1 { color: var(--vscode-textLink-foreground); }
-							h2 { color: var(--vscode-textLink-foreground); margin-top: 30px; }
-							.section {
-								margin-bottom: 30px;
-								padding: 20px;
-								background: var(--vscode-textBlockQuote-background);
-								border-radius: 8px;
-							}
-							.solution-content {
-								overflow-x: auto;
-							}
-							.solution-content pre {
-								background: var(--vscode-textPreformat-background);
-								padding: 12px;
-								border-radius: 4px;
-								overflow-x: auto;
-							}
-							.solution-content code {
-								font-family: 'Fira Code', Consolas, monospace;
-							}
-							.solution-content img {
-								max-width: 100%;
-							}
-							.paid-only {
-								color: var(--vscode-errorForeground);
-								font-style: italic;
-							}
-							.article-list {
-								display: flex;
-								flex-direction: column;
-								gap: 12px;
-							}
-							.article-item {
-								padding: 15px;
-								background: var(--vscode-editor-background);
-								border-radius: 6px;
-								cursor: pointer;
-								transition: background 0.2s;
-								border: 1px solid var(--vscode-panel-border);
-							}
-							.article-item:hover {
-								background: var(--vscode-list-hoverBackground);
-							}
-							.article-title {
-								font-weight: bold;
-								font-size: 14px;
-								margin-bottom: 8px;
-							}
-							.article-meta {
-								font-size: 12px;
-								color: var(--vscode-descriptionForeground);
-								margin-bottom: 8px;
-							}
-							.article-meta span {
-								margin-right: 12px;
-							}
-							.article-summary {
-								font-size: 13px;
-								color: var(--vscode-descriptionForeground);
-								overflow: hidden;
-								text-overflow: ellipsis;
-								display: -webkit-box;
-								-webkit-line-clamp: 2;
-								-webkit-box-orient: vertical;
-							}
-							.no-solution {
-								text-align: center;
-								padding: 40px;
-								color: var(--vscode-descriptionForeground);
-							}
-						</style>
-					</head>
-					<body>
-						<h1>📚 ${titleSlug} 题解</h1>
-						
-						${officialHtml || ''}
-						${communityHtml || ''}
-						
-						${!officialHtml && !communityHtml ? '<div class="no-solution">暂无题解</div>' : ''}
-						
-						<script>
-							const vscode = acquireVsCodeApi();
-							function openArticle(slug) {
-								vscode.postMessage({ type: 'openArticle', slug: slug });
-							}
-						</script>
-					</body>
-					</html>
-				`;
-
-				// 处理点击社区题解
-				panel.webview.onDidReceiveMessage(async (message: PanelToExtensionMessage) => {
-					if (message.type === 'openArticle') {
-						try {
-							const articleData = await leetCodeApi.getSolutionArticle(message.slug);
-							const article = articleData?.data?.solutionArticle;
-							if (article) {
-								panel.webview.html = `
-									<!DOCTYPE html>
-									<html lang="zh-CN">
-									<head>
-										<meta charset="UTF-8">
-										<style>
-											body {
-												font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-												padding: 20px;
-												line-height: 1.6;
-												color: var(--vscode-foreground);
-												background-color: var(--vscode-editor-background);
-											}
-											h1 { color: var(--vscode-textLink-foreground); }
-											.meta { color: var(--vscode-descriptionForeground); margin-bottom: 20px; }
-											pre { background: var(--vscode-textPreformat-background); padding: 12px; border-radius: 4px; overflow-x: auto; }
-											code { font-family: 'Fira Code', Consolas, monospace; }
-											img { max-width: 100%; }
-											.back-btn {
-												background: var(--vscode-button-background);
-												color: var(--vscode-button-foreground);
-												border: none;
-												padding: 8px 16px;
-												border-radius: 4px;
-												cursor: pointer;
-												margin-bottom: 20px;
-											}
-										</style>
-									</head>
-									<body>
-										<button class="back-btn" onclick="history.back()">← 返回列表</button>
-										<h1>${escapeHtml(article.title)}</h1>
-										<div class="meta">
-											👍 ${article.upvoteCount} | 
-											作者: ${escapeHtml(article.author?.profile?.realName || article.author?.username || '匿名')}
-											${article.byLeetcode ? ' | 👑 官方' : ''}
-										</div>
-										<div class="solution-content">${renderMarkdownToHtml(article.content, 'all')}</div>
-									</body>
-									</html>
-								`;
-							}
-						} catch (error) {
-							vscode.window.showErrorMessage(`加载题解失败: ${errMsg(error)}`);
-						}
-					}
-				});
-
-			} catch (error) {
-				vscode.window.showErrorMessage(`加载题解失败: ${errMsg(error)}`);
+// ==================== 查看题解命令 ====================
+		// 历史遗留的独立题解面板已移除（无 CSP + 原始 HTML 直插 + slug 未转义 + 与面板内置
+		// 题解管线双实现漂移）：命令改为打开题目面板并直接进入题解页，统一走渲染管线
+		const viewSolutionDisposable = vscode.commands.registerCommand('leetcode.viewSolution', async (item?: any) => {
+			const currentProblem = context.workspaceState.get<any>('currentProblem');
+			const titleSlug: string | undefined = item?.question?.titleSlug || currentProblem?.titleSlug;
+			if (!titleSlug) {
+				vscode.window.showErrorMessage('请先从题目列表打开一道题目');
+				return;
 			}
+			await vscode.commands.executeCommand('leetcode.openProblem', {
+				frontendQuestionId: item?.question?.frontendQuestionId || '',
+				title: item?.question?.title || currentProblem?.title || '',
+				titleSlug,
+				difficulty: '',
+				status: null
+			} as Question, { tab: 'solution' });
 		});
-		} finally {
-			pendingSolutionOpens.delete(earlyKey);
-		}
-	});
 
 // ==================== 查看最近一次原始判题响应（JSON 编辑器，可折叠） ====================
 		const showRawJudgeDisposable = vscode.commands.registerCommand('leetcode.showRawJudge', () => showRawJudgeResponse());
@@ -2462,8 +2251,3 @@ async function updateStatusBar(authManager: AuthManager) {
 	statusBarItem.show();
 }
 
-export function deactivate() {
-	if (statusBarItem) {
-		statusBarItem.dispose();
-	}
-}

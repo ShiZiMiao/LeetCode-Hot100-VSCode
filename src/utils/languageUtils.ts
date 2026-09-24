@@ -1,21 +1,20 @@
 /**
- * 语言工具函数
- * 提供语言slug到文件扩展名的映射和语言选择功能
+ * 语言工具（纯逻辑，无 vscode 依赖，可直接单测）
+ * 语言 slug 归一化（leetcode.cn 真实 slug 与内部规范 slug 的别名收口）、文件扩展名映射。
+ * QuickPick 交互在 views/languageQuickPick.ts，保持本模块零 vscode 依赖。
  */
 
-import * as vscode from 'vscode';
-
-// 支持的编程语言列表
-export interface LanguageInfo {
-    slug: string;           // LeetCode使用的语言标识
+/** 内部规范语言条目 */
+interface LanguageInfo {
+    slug: string;           // 内部规范语言标识
     displayName: string;    // 显示名称
     extension: string;      // 文件扩展名
 }
 
-// LeetCode支持的语言列表
+// 支持的编程语言列表
 // 注意只有 python3 一个 Python 条目：leetcode.cn 的 'python' slug 是 Python 2 判题环境，
 // 与 Python3 同为 .py 扩展名，在语言选择器里并列极易误选，且注解语法无法通过判题
-export const SUPPORTED_LANGUAGES: LanguageInfo[] = [
+const SUPPORTED_LANGUAGE_LIST: LanguageInfo[] = [
     { slug: 'python3', displayName: 'Python3', extension: 'py' },
     { slug: 'java', displayName: 'Java', extension: 'java' },
     { slug: 'cpp', displayName: 'C++', extension: 'cpp' },
@@ -32,84 +31,38 @@ export const SUPPORTED_LANGUAGES: LanguageInfo[] = [
     { slug: 'php', displayName: 'PHP', extension: 'php' },
 ];
 
-// slug到语言信息的映射
+/** 对外只读语言表（选择器/保存路径共用） */
+export const SUPPORTED_LANGUAGES: ReadonlyArray<Readonly<LanguageInfo>> = SUPPORTED_LANGUAGE_LIST;
+
+/**
+ * leetcode.cn 真实 slug → 内部规范 slug 的别名：
+ * Go 在 leetcode.cn 是 'golang'（非 'go'），C++ 的 'c++' 写法与 python 别名一并归一，
+ * 全仓语言识别/扩展名/选择器统一走 normalizeLangSlug，避免各处自维护别名表
+ */
+const SLUG_ALIASES: Record<string, string> = {
+    golang: 'go',
+    'c++': 'cpp',
+    'py': 'python3',
+};
+
+/** 语言 slug 归一化：trim/小写 + 别名映射；未知 slug 原样小写返回 */
+export function normalizeLangSlug(langSlug: string): string {
+    const key = String(langSlug || '').trim().toLowerCase();
+    return SLUG_ALIASES[key] ?? key;
+}
+
 const slugToLanguage: Map<string, LanguageInfo> = new Map(
-    SUPPORTED_LANGUAGES.map(lang => [lang.slug, lang])
+    SUPPORTED_LANGUAGE_LIST.map(lang => [lang.slug, lang])
 );
 
+/** 按归一化 slug 取语言条目；未知返回 undefined */
+export function getLanguageInfo(langSlug: string): LanguageInfo | undefined {
+    return slugToLanguage.get(normalizeLangSlug(langSlug));
+}
+
 /**
- * 根据语言slug获取文件扩展名
+ * 根据语言slug获取文件扩展名（未知语言回退 txt，不丢文件）
  */
 export function getExtension(langSlug: string): string {
-    return slugToLanguage.get(langSlug)?.extension || 'txt';
-}
-
-/**
- * 让用户选择编程语言
- * @param availableSnippets 题目支持的代码片段列表
- * @returns 选择的语言slug，如果取消则返回undefined
- */
-export async function selectLanguage(availableSnippets: { lang: string; langSlug: string; code: string }[]): Promise<{ langSlug: string; code: string } | undefined> {
-    // 构建可选语言列表（只显示题目支持的语言）
-    const items: vscode.QuickPickItem[] = [];
-    const snippetMap = new Map<string, { langSlug: string; code: string }>();
-
-    for (const snippet of availableSnippets) {
-        const langInfo = slugToLanguage.get(snippet.langSlug);
-        if (langInfo) {
-            items.push({
-                label: langInfo.displayName,
-                description: `.${langInfo.extension}`,
-                detail: snippet.langSlug
-            });
-            snippetMap.set(snippet.langSlug, { langSlug: snippet.langSlug, code: snippet.code });
-        }
-    }
-
-    // 按常用语言排序（Python, Java, C++ 优先；Python2 的 python slug 已移除）
-    const priorityOrder = ['python3', 'java', 'cpp', 'javascript', 'typescript', 'go', 'c'];
-    items.sort((a, b) => {
-        const aIndex = priorityOrder.indexOf(a.detail || '');
-        const bIndex = priorityOrder.indexOf(b.detail || '');
-        if (aIndex === -1 && bIndex === -1) {
-            return 0;
-        }
-        if (aIndex === -1) {
-            return 1;
-        }
-        if (bIndex === -1) {
-            return -1;
-        }
-        return aIndex - bIndex;
-    });
-
-    const selected = await vscode.window.showQuickPick(items, {
-        placeHolder: '选择编程语言',
-        title: '请选择编程语言'
-    });
-
-    if (selected && selected.detail) {
-        return snippetMap.get(selected.detail);
-    }
-
-    return undefined;
-}
-
-/**
- * 获取代码文件的保存路径
- * @param workspaceFolder 工作区文件夹
- * @param questionId 题目ID
- * @param titleSlug 题目slug
- * @param langSlug 语言slug
- */
-export function getCodeFilePath(
-    workspaceFolder: string,
-    questionId: string,
-    titleSlug: string,
-    langSlug: string
-): string {
-    const ext = getExtension(langSlug);
-    // 文件名格式：题号_题目slug.扩展名
-    const fileName = `${questionId}_${titleSlug}.${ext}`;
-    return `${workspaceFolder}/leetcode/${fileName}`;
+    return getLanguageInfo(langSlug)?.extension || 'txt';
 }

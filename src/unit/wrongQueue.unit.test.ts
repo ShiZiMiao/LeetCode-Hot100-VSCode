@@ -91,7 +91,7 @@ test('sortWrongByReview：到期时间升序（已到期的排最前）', () => 
 test('pickReviewCandidate：到期优先、跳过已复习、全部复习完返回空', () => {
     const DAY = 24 * 60 * 60 * 1000;
     const now = 10000000;
-    // a：已到期；b：未到期（1000ms 前失败 + 1 天间隔 → 未到期…… 用 far past 使其到期）
+    // a、b：均到期（now - 2*DAY 失败 + 1 天间隔已过）；c：未到期（1000ms 前失败 + 1 天间隔）
     const a: WrongEntry = { titleSlug: 'a', title: 'a', failedAt: now - 2 * DAY, reason: 'r', failCount: 1 };
     const b: WrongEntry = { titleSlug: 'b', title: 'b', failedAt: now - 2 * DAY, reason: 'r', failCount: 1 };
     const c: WrongEntry = { titleSlug: 'c', title: 'c', failedAt: now - 1000, reason: 'r', failCount: 1 };

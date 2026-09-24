@@ -4,7 +4,7 @@
  * 无 frontendQuestionId，打开用 slug）
  */
 
-export interface SimilarQuestion {
+interface SimilarQuestion {
     titleSlug: string;
     title: string;
     translatedTitle: string;
@@ -18,7 +18,7 @@ export function parseSimilarQuestions(raw: unknown): SimilarQuestion[] {
     if (typeof raw === 'string') {
         try {
             arr = JSON.parse(raw);
-        } catch (e) {
+        } catch {
             return [];
         }
     }

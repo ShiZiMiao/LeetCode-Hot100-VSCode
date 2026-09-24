@@ -13,7 +13,7 @@ export interface WrongEntry {
     failCount?: number;
 }
 
-export const WRONG_QUEUE_MAX = 100;
+const WRONG_QUEUE_MAX = 100;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

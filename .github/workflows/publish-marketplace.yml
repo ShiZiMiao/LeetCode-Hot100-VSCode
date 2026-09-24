@@ -25,7 +25,7 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 11
 
       - uses: actions/setup-node@v4
         with:
@@ -39,7 +39,7 @@ jobs:
       # 与本地发布完全一致：--no-dependencies（pnpm 布局兼容）、--skip-license（LICENSE 校验冲突）
       # --readme-path：商店页用 MARKETPLACE.md（无 fork 归属声明；GitHub 首页仍用 README.md）
       - name: Package VSIX
-        run: npx --yes @vscode/vsce@latest package --out Hot100-for-VSCode.vsix --no-dependencies --skip-license --readme-path MARKETPLACE.md
+        run: npx --yes @vscode/vsce@3.9.3 package --out Hot100-for-VSCode.vsix --no-dependencies --skip-license --readme-path MARKETPLACE.md
 
       # --packagePath 直接上传已打包产物，不会执行 npm version / git tag 等操作；
       # --oidc 用 GitHub Actions OIDC 交换短期 Marketplace 凭证。

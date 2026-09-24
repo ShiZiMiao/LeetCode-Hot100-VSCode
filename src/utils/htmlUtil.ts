@@ -7,7 +7,9 @@ export function escapeHtml(text: string): string {
 		.replace(/&/g, '&amp;')
 		.replace(/</g, '&lt;')
 		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;');
+		.replace(/"/g, '&quot;')
+		// 单引号必须转义：onclick='…' 等单引号属性/JS 字符串上下文只能靠它设防
+		.replace(/'/g, '&#39;');
 }
 
 export function formatArticleDate(ts: number): string {

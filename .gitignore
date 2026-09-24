@@ -26,5 +26,8 @@ npm-debug.log*
 __pycache__/
 *.pyc
 
+# 扩展在本仓库刷题生成的练习文件（leetcode/{题号}_{slug}.{ext}、notes/、debug/）
+leetcode/
+
 # ZCode 工作区会话状态
 .zcode/
