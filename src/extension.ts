@@ -18,13 +18,13 @@ import { nextQuestion } from './utils/questionOrder';
 import { pickDailyQuestion } from './utils/dailyQuestion';
 import { isReviewDue, formatFailedAt, pickReviewCandidate } from './utils/wrongQueue';
 import { localDateStr } from './utils/studyStats';
-import { getExtension, SUPPORTED_LANGUAGES } from './utils/languageUtils';
+import { getExtension, langSlugOfExtension, SUPPORTED_LANGUAGES } from './utils/languageUtils';
 import { selectLanguage } from './views/languageQuickPick';
 import { generateDebugFile } from './utils/debugUtils';
 import { JudgeCaseInfo } from './utils/judgeReport';
 import { extractExampleInputs, extractExpectedOutputs, parseProblemFileName } from './utils/problemText';
 import { buildLeetCodeCookie } from './utils/loginCookie';
-import { escapeHtml, errMsg, formatArticleDate } from './utils/htmlUtil';
+import { escapeHtml, errMsg, formatArticleDate, isDisposedError } from './utils/htmlUtil';
 import { difficultyZhOf } from './utils/similarQuestions';
 import { generatePanelHtml, renderMarkdownToHtml, sanitizeSolutionContent, localizeContentImages, initHighlightJs } from './views/problemPanel';
 import { reportJudgeResult, showRawJudgeResponse, tryBeginJudge, pollJudgeResult, releaseJudge, getLastJudgeCases, oneLine, judgeOutputChannel, judgeStatusBar, errorDiagnostics, JUDGE_POLL_BUDGET_MS } from './judgeFeedback';
@@ -94,17 +94,43 @@ async function getProblemCodeEditor(context: vscode.ExtensionContext): Promise<v
 	if (active && active.document.uri.scheme === 'file') {
 		// 只接受受支持语言扩展名的文件：自定义用例文件（debug/customcase_*.txt）、
 		// 备忘等旁路文件不作为代码/调试来源，回退到 currentProblem.filePath
-		const extMatch = active.document.uri.fsPath.match(/\.([a-z0-9]+)$/i);
+		const fsPath = active.document.uri.fsPath;
+		const extMatch = fsPath.match(/\.([a-z0-9]+)$/i);
 		const ext = extMatch ? extMatch[1].toLowerCase() : '';
 		const codeExts = new Set(SUPPORTED_LANGUAGES.map(l => l.extension));
 		if (codeExts.has(ext)) {
-			return active;
+			// 调试驱动（{题号}_{slug}_debug.*、debug/ 目录、Java *Debug.java 等）与无法
+			// 识别题目身份的文件一律不作为代码来源——曾把调试模板整份提交到 LeetCode
+			const base = path.basename(fsPath);
+			const parsed = parseProblemFileName(base);
+			const isDriverFile = (parsed?.isDebug ?? true) || /(^|[\\/])debug[\\/]/.test(fsPath);
+			if (!isDriverFile) {
+				return active;
+			}
+			return openFallbackSolutionEditor(context, fsPath, parsed?.isDebug
+				? '当前文件是调试驱动文件，不能作为测试/提交来源'
+				: '当前文件名无法识别题目身份（约定 {题号}_{slug}.{ext}），不能作为测试/提交来源');
 		}
 	}
+	return openFallbackSolutionEditor(context, undefined, undefined);
+}
+
+/** 回退打开 currentProblem.filePath 记录的题解文件（焦点文件不可用时共用） */
+async function openFallbackSolutionEditor(
+	context: vscode.ExtensionContext,
+	activeFsPath: string | undefined,
+	reason: string | undefined
+): Promise<vscode.TextEditor | undefined> {
 	const currentProblem = context.workspaceState.get<any>('currentProblem');
 	const filePath: string | undefined = currentProblem?.filePath;
-	if (!filePath) {
+	if (!filePath || filePath === activeFsPath) {
+		if (reason) {
+			vscode.window.showErrorMessage(`${reason}，且无已登记的题解文件可回退，请先从题目列表打开一道题目`);
+		}
 		return undefined;
+	}
+	if (reason) {
+		vscode.window.showInformationMessage(`${reason}，已改用题解文件 ${path.basename(filePath)}`);
 	}
 	try {
 		const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
@@ -274,7 +300,8 @@ async function runCustomCaseWith(api: LeetCodeApi, problem: any, solutionPath: s
 			const check = await pollJudgeResult(api, interpretId);
 			if (check) {
 				reportJudgeResult('自定义用例', check, {
-					ok: !!check.run_success && !!check.correct_answer,
+					// 自定义用例无期望输出时 correct_answer 可能为 null/缺失，显式 false 才算失败
+					ok: !!check.run_success && check.correct_answer !== false,
 					fileUri: vscode.Uri.file(solutionPath),
 					inputFallback: dataInput,
 					titleSlug: problem.titleSlug
@@ -303,12 +330,13 @@ async function runCustomCaseWith(api: LeetCodeApi, problem: any, solutionPath: s
 async function resolveProblemFromFile(
 	api: LeetCodeApi,
 	context: vscode.ExtensionContext,
-	fileName: string,
+	filePath: string,
 	currentProblem: any
 ): Promise<any> {
 	if (!currentProblem) {
 		return currentProblem;
 	}
+	const fileName = path.basename(filePath);
 	// 注意 py 必须映射 python3：leetcode.cn 的 'python' 是 Python 2 判题环境（官方模板
 	// 为 class Solution(object) + docstring 注解），注解语法会直接 SyntaxError
 	const langMap: Record<string, string> = {
@@ -319,16 +347,25 @@ async function resolveProblemFromFile(
 	const extMatch = fileName.match(/\.([a-z0-9]+)$/i);
 	const ext = extMatch ? extMatch[1].toLowerCase() : '';
 	const parsed = parseProblemFileName(fileName);
-	if (!parsed || parsed.titleSlug === currentProblem.titleSlug) {
-		// 旧版本 langMap 曾把 .py 映射成 python（Python 2）并写入 state：lang 按当前文件
-		// 扩展名归一（.py → python3；其他语言文件同样可以从脏值纠正），避免继续以错误语言提交
+	if (!parsed || parsed.isDebug) {
+		// 调试驱动/无法识别身份的文件绝不顶替 currentProblem——否则会把该文件内容
+		// 运行/提交到 currentProblem 对应的题（调试模板曾被整份提交到 LeetCode）
+		vscode.window.showErrorMessage(
+			parsed?.isDebug
+				? '当前文件是调试驱动文件，不能作为测试/提交来源，请聚焦题解代码文件后再试'
+				: '无法从文件名识别题目身份（约定 {题号}_{slug}.{ext}），已中止本次操作，避免运行/提交到错误的题目'
+		);
+		return null;
+	}
+	if (parsed.titleSlug === currentProblem.titleSlug) {
+		// lang 一律按当前文件扩展名归一（文件即提交语言）：曾只在历史脏值 python 时纠正，
+		// 其余情况保留 currentProblem.lang——用 Python 做过的题切到 C 文件提交会被当 Python
+		// 交上去（判题端报 Solution.py SyntaxError）；扩展名未映射时才保留原值。
+		// filePath 同步为当前文件——重认领/切文件后不得丢失，否则后续命令误报"请先打开题目"
 		const extLang = langMap[ext];
-		if (currentProblem.lang === 'python' && extLang) {
-			const healed = { ...currentProblem, lang: extLang };
-			await context.workspaceState.update('currentProblem', healed);
-			return healed;
-		}
-		return currentProblem;
+		const updated = { ...currentProblem, lang: extLang || currentProblem.lang, filePath };
+		await context.workspaceState.update('currentProblem', updated);
+		return updated;
 	}
 	// 文件名指向另一道题（非 Hot 100 的外部文件都在此路径）：必须按该题身份继续，
 	// 拉取失败绝不能回退 currentProblem——否则会把当前文件代码运行/提交到上一题
@@ -351,18 +388,31 @@ async function resolveProblemFromFile(
 	const problem = {
 		titleSlug: q.titleSlug || parsed.titleSlug,
 		questionId: q.questionId,
+		questionFrontendId: q.questionFrontendId,
 		lang: langMap[ext] || currentProblem.lang,
-		testCases: q.exampleTestcases || q.sampleTestCase || currentProblem.testCases || ''
+		testCases: q.exampleTestcases || q.sampleTestCase || currentProblem.testCases || '',
+		filePath
 	};
 	await context.workspaceState.update('currentProblem', problem);
 	return problem;
 }
 
 /**
+ * 题解文件名主干 {题号}_{slug}：Hot 100 静态表优先，其余取题面前端题号（questionFrontendId），
+ * 与 openProblem 的命名口径一致——曾因回退内部 questionId 写出与打开不一致的第二个文件。
+ */
+function solutionFileStem(problem: { titleSlug: string; questionId?: string; questionFrontendId?: string }): string {
+	const hotq = HOT_100_LIST.find(q => q.titleSlug === problem.titleSlug);
+	const idPart = hotq?.frontendQuestionId || problem.questionFrontendId || (problem.questionId ? String(problem.questionId) : '0');
+	return `${idPart}_${problem.titleSlug}`;
+}
+
+/**
  * 把云端某次提交的代码恢复到本地题解文件（跨设备代码同步：A 机提交 → B 机登录同账号后恢复）。
  * 文件名沿用 {题号}_{slug}.{ext} 约定（解析/判题流程通用）；本地已有同题文件时询问覆盖/另存副本。
  * 恢复成功后同步更新 currentProblem，后续测试/提交直接作用于恢复出的文件。
- * 返回恢复写入的语言 slug（失败/取消返回 null，调用方可回退模板流程）。
+ * 返回恢复写入的语言 slug 与实际写入的文件路径（含另存副本时为副本路径；失败/取消
+ * 返回 null，调用方可回退模板流程）。
  */
 async function restoreSubmissionToLocal(
 	context: vscode.ExtensionContext,
@@ -370,7 +420,7 @@ async function restoreSubmissionToLocal(
 	problem: any,
 	wsHint: { filePath?: string },
 	submission: { id: string; lang: string; statusDisplay: string }
-): Promise<string | null> {
+): Promise<{ lang: string; filePath: string } | null> {
 	const ext = getExtension(submission.lang);
 	if (ext === 'txt') {
 		vscode.window.showWarningMessage(`暂不支持恢复 ${submission.lang} 语言的代码（无文件扩展名映射）`);
@@ -381,8 +431,7 @@ async function restoreSubmissionToLocal(
 		vscode.window.showErrorMessage(`未能获取提交 ${submission.id} 的代码，请稍后重试`);
 		return null;
 	}
-	const hotq = HOT_100_LIST.find(q => q.titleSlug === problem.titleSlug);
-	const idPart = hotq?.frontendQuestionId || (problem.questionId ? String(problem.questionId) : '0');
+	const stem = solutionFileStem(problem);
 	const ws = resolveTargetWorkspaceFolder(wsHint?.filePath);
 	if (!ws) {
 		vscode.window.showErrorMessage('请先打开一个工作区文件夹');
@@ -394,7 +443,7 @@ async function restoreSubmissionToLocal(
 	} catch {
 		// 目录创建失败时由后续 writeFile 透出真实错误
 	}
-	const fileName = `${idPart}_${problem.titleSlug}.${ext}`;
+	const fileName = `${stem}.${ext}`;
 	const fileUri = vscode.Uri.joinPath(dir, fileName);
 	let exists = false;
 	try {
@@ -405,7 +454,7 @@ async function restoreSubmissionToLocal(
 	}
 	let target = fileUri;
 	if (exists) {
-		const copyName = `${idPart}_${problem.titleSlug}_restored.${ext}`;
+		const copyName = `${stem}_restored.${ext}`;
 		const choice = await vscode.window.showQuickPick(
 			[
 				{ label: '覆盖现有文件', description: fileUri.fsPath },
@@ -426,27 +475,28 @@ async function restoreSubmissionToLocal(
 	await context.workspaceState.update('currentProblem', {
 		titleSlug: problem.titleSlug,
 		questionId: problem.questionId,
+		questionFrontendId: problem.questionFrontendId,
 		lang: detail.lang || submission.lang,
 		filePath: target.fsPath,
 		testCases: problem.testCases || ''
 	});
 	vscode.window.showInformationMessage(
-		`已恢复 ${submission.statusDisplay || '提交'} 代码到 leetcode/${target.fsPath.split(/[\\/]/).pop() || fileName}`
+		`已恢复 ${langDisplayName(submission.lang)} 的${submission.statusDisplay || '提交'}代码到 leetcode/${target.fsPath.split(/[\\/]/).pop() || fileName}`
 	);
-	return detail.lang || submission.lang;
+	return { lang: detail.lang || submission.lang, filePath: target.fsPath };
 }
 
 /**
  * 打开题目时尝试跨设备同步：本机没有该题代码文件、云端却有历史提交时，
  * 询问是否从云端恢复代码（语言以云端提交为准，不再弹语言选择器）。
- * 返回恢复写入的语言 slug；无提交/未登录/用户选择模板或取消时返回 null（走模板流程）。
+ * 返回恢复写入的语言 slug 与文件路径；无提交/未登录/用户选择模板或取消时返回 null（走模板流程）。
  */
 async function tryRestoreOnOpen(
 	context: vscode.ExtensionContext,
 	api: LeetCodeApi,
-	q: { titleSlug: string; questionId: string; exampleTestcases?: string; sampleTestCase?: string },
+	q: { titleSlug: string; questionId: string; questionFrontendId?: string; exampleTestcases?: string; sampleTestCase?: string },
 	workspaceFolder: string
-): Promise<string | null> {
+): Promise<{ lang: string; filePath: string } | null> {
 	let subs: Awaited<ReturnType<LeetCodeApi['getSubmissions']>>;
 	try {
 		subs = await api.getSubmissions(q.titleSlug, SUBMISSION_LIST_LIMIT);
@@ -459,23 +509,31 @@ async function tryRestoreOnOpen(
 	const problem = {
 		titleSlug: q.titleSlug,
 		questionId: q.questionId,
+		questionFrontendId: q.questionFrontendId,
 		testCases: q.exampleTestcases || q.sampleTestCase || ''
 	};
 	// 固定把恢复写进 openProblem 已解析的目标工作区（多根工作区时与模板文件同目录）
 	const currentProblemForWs = { filePath: `${workspaceFolder}/leetcode` };
-	const latestAc = subs.find(s => s.statusDisplay === 'Accepted');
+	// 多语言分组：每种语言给一个"恢复该语言最近一次通过"入口（恢复语言一目了然、可自选；
+	// subs 按时间倒序，首个即该语言最近一次）
+	const latestAcByLang = new Map<string, (typeof subs)[number]>();
+	for (const s of subs) {
+		if (s.statusDisplay === 'Accepted' && !latestAcByLang.has(s.lang)) {
+			latestAcByLang.set(s.lang, s);
+		}
+	}
 	const options: (vscode.QuickPickItem & { sub?: (typeof subs)[number] })[] = [];
-	if (latestAc) {
+	for (const [lang, s] of latestAcByLang) {
 		options.push({
-			label: `📥 恢复最近通过的提交（${langDisplayName(latestAc.lang)}）`,
-			description: latestAc.timestamp ? formatFailedAt(latestAc.timestamp * 1000) : '',
-			sub: latestAc
+			label: `📥 恢复 ${langDisplayName(lang)} 最近通过的提交`,
+			description: s.timestamp ? formatFailedAt(s.timestamp * 1000) : '',
+			sub: s
 		});
 	}
 	options.push({ label: '📥 从提交历史中选择恢复…' });
 	options.push({ label: '使用官方模板新建（本次不恢复）' });
 	const pick = await vscode.window.showQuickPick(options, {
-		title: `本机无「${q.titleSlug}」的代码文件${latestAc ? '，云端有已通过的提交' : '，云端有历史提交'}`,
+		title: `本机无「${q.titleSlug}」的代码文件${latestAcByLang.size > 0 ? '，云端有已通过的提交' : '，云端有历史提交'}`,
 		placeHolder: '是否从云端恢复代码（跨设备同步）？'
 	});
 	if (!pick) {
@@ -500,8 +558,8 @@ async function tryRestoreOnOpen(
 		}
 		chosen = historyPick.sub;
 	}
-	const restoredLang = await restoreSubmissionToLocal(context, api, problem, currentProblemForWs, chosen);
-	return restoredLang ?? null;
+	const restored = await restoreSubmissionToLocal(context, api, problem, currentProblemForWs, chosen);
+	return restored ?? null;
 }
 
 // 状态栏项
@@ -535,6 +593,10 @@ function getFfmpegCore(context: vscode.ExtensionContext): Promise<any> {
 			});
 		})();
 	}
+	ffmpegCorePromise.catch(() => {
+		// 加载失败不缓存 rejection：清空后下次播放可重试（此前一次失败永久失败）
+		ffmpegCorePromise = null;
+	});
 	return ffmpegCorePromise;
 }
 
@@ -731,7 +793,7 @@ export function activate(context: vscode.ExtensionContext) {
 		let problem = currentProblem;
 		const editor = await getProblemCodeEditor(context);
 		if (editor) {
-			problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
+			problem = await resolveProblemFromFile(leetCodeApi, context, editor.document.uri.fsPath, currentProblem);
 		}
 		if (!problem) {
 			return;
@@ -759,7 +821,7 @@ export function activate(context: vscode.ExtensionContext) {
 				[
 					{
 						label: '📥 恢复代码到本地文件',
-						description: `保存为 leetcode/${(HOT_100_LIST.find(q => q.titleSlug === problem.titleSlug)?.frontendQuestionId || problem.questionId || '0')}_${problem.titleSlug}.${getExtension(pick.sub.lang)}`
+						description: `保存为 leetcode/${solutionFileStem(problem)}.${getExtension(pick.sub.lang)}`
 					},
 					{ label: '🌐 在浏览器打开提交详情', description: '默认提交页' }
 				],
@@ -791,7 +853,7 @@ export function activate(context: vscode.ExtensionContext) {
 		let problem = currentProblem;
 		const editor = await getProblemCodeEditor(context);
 		if (editor) {
-			problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
+			problem = await resolveProblemFromFile(leetCodeApi, context, editor.document.uri.fsPath, currentProblem);
 		}
 		if (!problem) {
 			return;
@@ -835,7 +897,7 @@ export function activate(context: vscode.ExtensionContext) {
 				let problem = currentProblem;
 				const editor = await getProblemCodeEditor(context);
 				if (editor) {
-					problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
+					problem = await resolveProblemFromFile(leetCodeApi, context, editor.document.uri.fsPath, currentProblem);
 				}
 				if (!problem) {
 					return;
@@ -866,7 +928,7 @@ export function activate(context: vscode.ExtensionContext) {
 			let problem = currentProblem;
 			const editor = await getProblemCodeEditor(context);
 			if (editor) {
-				problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
+				problem = await resolveProblemFromFile(leetCodeApi, context, editor.document.uri.fsPath, currentProblem);
 			}
 			if (!problem) {
 				return;
@@ -931,21 +993,22 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 			return;
 		}
-		rec.slugs = [...rec.slugs, entry.titleSlug];
-		// 今日已复习记录为 best-effort 缓存：写入失败不阻断复习流（题目照常打开）
-		try {
-			await context.globalState.update(REVIEW_KEY, rec);
-		} catch (e) {
-			console.error(`[reviewWrong] 记录今日复习进度失败: ${errMsg(e)}`);
-		}
 		const q = HOT_100_LIST.find(x => x.titleSlug === entry.titleSlug);
-		if (q) {
+			if (!q) {
+				// 不在 Hot 100 的条目不计入"今日已复习"（此前先记后判，错题被标已复习却永远打不开）
+				vscode.window.showWarningMessage(`错题「${entry.title}」不在 Hot 100 列表中，无法直接打开`);
+				return;
+			}
+			// "今日已复习"在成功打开后才记录（此前先记录后打开，中途失败会误标）
+			rec.slugs = [...rec.slugs, entry.titleSlug];
+			// 今日已复习记录为 best-effort 缓存：写入失败不阻断复习流（题目照常打开）
+			try {
+				await context.globalState.update(REVIEW_KEY, rec);
+			} catch (e) {
+				console.error(`[reviewWrong] 记录今日复习进度失败: ${errMsg(e)}`);
+			}
 			await vscode.commands.executeCommand('leetcode.openProblem', buildQuestion(q));
-		} else {
-			vscode.window.showWarningMessage(`错题「${entry.title}」不在 Hot 100 列表中，无法直接打开`);
-			return;
-		}
-		vscode.window.showInformationMessage(`复习错题：${q.titleCn}（今日第 ${res.reviewedCount + 1}/${res.total} 题）`);
+			vscode.window.showInformationMessage(`复习错题：${q.titleCn}（今日第 ${res.reviewedCount + 1}/${res.total} 题）`);
 	}));
 
 	// 清空错题回顾队列
@@ -1155,8 +1218,15 @@ export function activate(context: vscode.ExtensionContext) {
 						vscode.postMessage({ type: 'autoLogin' });
 					}
 
-					function setAutoStatus(html, cls) {
-						document.getElementById('autoStatus').innerHTML = '<span class="' + cls + '">' + html + '</span>';
+					function setAutoStatus(text, cls) {
+						// textContent 渲染：错误串（playwright/spawn 报错）可能含 HTML 字符，
+						// innerHTML 会被当标记解析（该页 CSP 允许 unsafe-inline，注入面可达）
+						var el = document.getElementById('autoStatus');
+						el.textContent = '';
+						var span = document.createElement('span');
+						span.className = cls || 'hint';
+						span.textContent = text;
+						el.appendChild(span);
 					}
 
 					function openLeetCode() {
@@ -1202,6 +1272,8 @@ export function activate(context: vscode.ExtensionContext) {
 				// 适配新的 userStatus API 响应
 				if (profile && profile.data && profile.data.userStatus && profile.data.userStatus.isSignedIn) {
 					const user = profile.data.userStatus;
+					// 校验通过才发"已登录"事件：状态栏/侧栏状态即时刷新（此前无调用点，需重启才更新）
+					authManager.markLoginVerified();
 					vscode.window.showInformationMessage(`登录成功！欢迎 ${user.realName || user.username}`);
 					panel.dispose();
 					return true;
@@ -1304,6 +1376,69 @@ export function activate(context: vscode.ExtensionContext) {
 		hot100Provider.refresh();
 	});
 
+	// ==================== 用其他语言新建题解文件命令 ====================
+	// 打开题目时已有语言文件会直接打开（跳过语言选择器）；换语言重做走此命令：
+	// 选语言 → 有该语言文件则打开，无则按官方模板新建（文件命名与打开题目一致）
+	context.subscriptions.push(vscode.commands.registerCommand('leetcode.newSolutionFile', async () => {
+		const currentProblem = context.workspaceState.get<any>('currentProblem');
+		if (!currentProblem?.titleSlug) {
+			vscode.window.showErrorMessage('请先从题目列表打开一道题目，再用本命令新建其他语言的题解文件');
+			return;
+		}
+		const ws = resolveTargetWorkspaceFolder(currentProblem.filePath);
+		if (!ws) {
+			vscode.window.showErrorMessage('请先打开一个工作区文件夹');
+			return;
+		}
+		let q: any;
+		try {
+			const data = await leetCodeApi.getQuestionContent(currentProblem.titleSlug);
+			q = data?.data?.question;
+		} catch (error) {
+			if (!isDisposedError(error)) { vscode.window.showErrorMessage(`拉取题目失败: ${errMsg(error)}`); }
+			return;
+		}
+		if (!q || !Array.isArray(q.codeSnippets) || q.codeSnippets.length === 0) {
+			vscode.window.showErrorMessage('未获取到题目代码模板，请稍后重试');
+			return;
+		}
+		const selected = await selectLanguage(q.codeSnippets);
+		if (!selected) {
+			return;
+		}
+		const ext = getExtension(selected.langSlug);
+		const stem = solutionFileStem(q);
+		const dir = vscode.Uri.joinPath(ws.uri, 'leetcode');
+		const fileUri = vscode.Uri.joinPath(dir, `${stem}.${ext}`);
+		let exists = false;
+		try {
+			await vscode.workspace.fs.stat(fileUri);
+			exists = true;
+		} catch {
+			exists = false;
+		}
+		if (exists) {
+			vscode.window.showInformationMessage(`该语言的题解文件已存在，直接打开 leetcode/${stem}.${ext}`);
+		} else {
+			try {
+				await vscode.workspace.fs.createDirectory(dir);
+			} catch {
+				// 目录创建失败时由后续 writeFile 透出真实错误
+			}
+			await vscode.workspace.fs.writeFile(fileUri, Buffer.from(selected.code, 'utf8'));
+		}
+		const doc = await vscode.workspace.openTextDocument(fileUri);
+		await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
+		await context.workspaceState.update('currentProblem', {
+			titleSlug: q.titleSlug || currentProblem.titleSlug,
+			questionId: q.questionId || currentProblem.questionId,
+			questionFrontendId: q.questionFrontendId,
+			lang: selected.langSlug,
+			filePath: fileUri.fsPath,
+			testCases: q.exampleTestcases || q.sampleTestCase || currentProblem.testCases || ''
+		});
+	}));
+
 	// ==================== 打开题目命令 ====================
 	const openProblemDisposable = vscode.commands.registerCommand('leetcode.openProblem', async (question: Question, opts?: { tab?: 'problem' | 'solution' }) => {
 		const initialTab: 'problem' | 'solution' = opts?.tab === 'solution' ? 'solution' : 'problem';
@@ -1313,6 +1448,10 @@ export function activate(context: vscode.ExtensionContext) {
 		const existingPanel = problemPanels.get(panelKey);
 		if (existingPanel) {
 			existingPanel.reveal(vscode.ViewColumn.Two);
+			// 「查看题解」入口直达题解页：此前只聚焦不切页，用户停在题目描述页
+			if (initialTab === 'solution') {
+				void existingPanel.webview.postMessage({ type: 'navigate', tab: 'solution' } satisfies ExtensionToPanelMessage);
+			}
 			return;
 		}
 		if (pendingProblemOpens.has(panelKey)) {
@@ -1335,10 +1474,32 @@ export function activate(context: vscode.ExtensionContext) {
 				// 已存在题解文件（如 1_two-sum.py）时跳过语言选择器，直接按已有的文件继续；
 				// 没有任何语言的文件时才让用户选语言（首次做题）
 				const preferredLangs = ['python3', 'java', 'cpp', 'javascript', 'typescript', 'go', 'rust', 'c'];
+				const stem = solutionFileStem(q);
 				let langSlug: string | null = null;
 				let snippetCode = '';
+				let restoredFilePath: string | null = null;
+				let priorFilePath: string | null = null;
+				// 同题继续：优先打开上次使用的语言文件——多语言文件并存时曾按 preferredLangs
+				// 顺序总开 Python，无视用户最近在写的 C/Java 文件（跨语言提交错语言的诱因）
+				const prior = context.workspaceState.get<any>('currentProblem');
+				if (prior?.titleSlug === q.titleSlug && typeof prior.filePath === 'string') {
+					const priorExt = (prior.filePath.match(/\.([a-z0-9]+)$/i)?.[1] ?? '').toLowerCase();
+					const priorLang = langSlugOfExtension(priorExt);
+					if (priorLang) {
+						try {
+							await vscode.workspace.fs.stat(vscode.Uri.file(prior.filePath));
+							langSlug = priorLang;
+							priorFilePath = prior.filePath;
+						} catch {
+							// 上次文件已删除：回退按 preferredLangs 顺序查找
+						}
+					}
+				}
 				for (const lang of preferredLangs) {
-					const candidate = vscode.Uri.file(`${workspaceFolder}/leetcode/${q.questionFrontendId}_${q.titleSlug}.${getExtension(lang)}`);
+					if (langSlug !== null) {
+						break;
+					}
+					const candidate = vscode.Uri.file(`${workspaceFolder}/leetcode/${stem}.${getExtension(lang)}`);
 					try {
 						await vscode.workspace.fs.stat(candidate);
 						langSlug = lang;
@@ -1349,9 +1510,10 @@ export function activate(context: vscode.ExtensionContext) {
 				}
 				if (langSlug === null) {
 					// 跨设备同步：本机无该题代码文件、云端有历史提交时先询问是否恢复
-					const restoredLang = await tryRestoreOnOpen(context, leetCodeApi, q, workspaceFolder);
-					if (restoredLang) {
-						langSlug = restoredLang;
+					const restored = await tryRestoreOnOpen(context, leetCodeApi, q, workspaceFolder);
+					if (restored) {
+						langSlug = restored.lang;
+						restoredFilePath = restored.filePath;
 					} else {
 						const selectedLanguage = await selectLanguage(q.codeSnippets);
 						if (!selectedLanguage) {
@@ -1366,41 +1528,47 @@ export function activate(context: vscode.ExtensionContext) {
 
 				// 构建代码文件路径
 				const leetcodeDir = vscode.Uri.file(`${workspaceFolder}/leetcode`);
-				const fileName = `${q.questionFrontendId}_${q.titleSlug}.${ext}`;
+				const fileName = `${stem}.${ext}`;
 				const fileUri = vscode.Uri.file(`${workspaceFolder}/leetcode/${fileName}`);
 
-				// 确保leetcode目录存在
-				try {
-					await vscode.workspace.fs.stat(leetcodeDir);
-				} catch {
-					await vscode.workspace.fs.createDirectory(leetcodeDir);
-				}
+				// 恢复分支直接用云端代码写好的文件（含另存副本）、同题继续打开上次文件：
+				// 不得再按命名重建/改开别的文件
+				const solutionFilePath = restoredFilePath ?? priorFilePath ?? fileUri.fsPath;
+				if (!restoredFilePath && !priorFilePath) {
+					// 确保leetcode目录存在
+					try {
+						await vscode.workspace.fs.stat(leetcodeDir);
+					} catch {
+						await vscode.workspace.fs.createDirectory(leetcodeDir);
+					}
 
-				// 检查文件是否已存在
-				let fileExists = false;
-				try {
-					await vscode.workspace.fs.stat(fileUri);
-					fileExists = true;
-				} catch {
-					fileExists = false;
-				}
+					// 检查文件是否已存在
+					let fileExists = false;
+					try {
+						await vscode.workspace.fs.stat(fileUri);
+						fileExists = true;
+					} catch {
+						fileExists = false;
+					}
 
-				// 如果文件不存在，创建并写入模板代码
-				if (!fileExists) {
-					const content = Buffer.from(snippetCode, 'utf8');
-					await vscode.workspace.fs.writeFile(fileUri, content);
+					// 如果文件不存在，创建并写入模板代码
+					if (!fileExists) {
+						const content = Buffer.from(snippetCode, 'utf8');
+						await vscode.workspace.fs.writeFile(fileUri, content);
+					}
 				}
 
 				// 打开代码文件
-				const doc = await vscode.workspace.openTextDocument(fileUri);
+				const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(solutionFilePath));
 				await vscode.window.showTextDocument(doc, vscode.ViewColumn.One);
 
 				// 存储当前题目信息用于提交
 				await context.workspaceState.update('currentProblem', {
 					titleSlug: q.titleSlug,
 					questionId: q.questionId,
+					questionFrontendId: q.questionFrontendId,
 					lang: langSlug,
-					filePath: fileUri.fsPath,
+					filePath: solutionFilePath,
 					testCases: q.exampleTestcases || q.sampleTestCase
 				});
 
@@ -1430,25 +1598,45 @@ export function activate(context: vscode.ExtensionContext) {
 					try {
 						await handlePanelMessage(message, panel, q);
 					} catch (error) {
-						vscode.window.showErrorMessage(`处理操作失败: ${errMsg(error)}`);
+						if (!isDisposedError(error)) { vscode.window.showErrorMessage(`处理操作失败: ${errMsg(error)}`); }
 					}
 				});
 
 				// viewSolution 入口直达题解页：面板就绪后立即触发一次题解加载（与面板内消息同款流程）
 				if (initialTab === 'solution') {
-					void handlePanelMessage({ type: 'loadSolution' } as PanelToExtensionMessage, panel, q);
+					void handlePanelMessage({ type: 'loadSolution' } as PanelToExtensionMessage, panel, q).catch((e) => {
+						if (!isDisposedError(e)) { console.error('[handlePanelMessage]', e); }
+					});
 				}
 
 				/**
 				 * 面板消息统一分发（题面/题解合一面板的全部消息；抽出便于外层统一兜底错误提示）
 				 */
+				// 每面板渲染世代号：异步流程只渲染"最新一次"请求（最后点击胜出，防止并发
+				// loadSolution/openArticle 后完成者覆盖页面）；activeTabRef 跟踪用户当前
+				// 所在标签，异步重建按其渲染，加载中切标签不再被弹回
+				let renderSeq = 0;
+				let activeTabRef: 'problem' | 'solution' = initialTab === 'solution' ? 'solution' : 'problem';
+				const beginRender = (): number => { renderSeq += 1; return renderSeq; };
+				const isCurrentRender = (seq: number): boolean => seq === renderSeq;
+				// 题解拉取单飞 + 合并：快速连点刷新不再并发打 N 套拉取（实测 10+ 连点触发限流，
+				// 子请求失败产出缺官方题解块的降级内容）；在途时后续请求合并为"完成后补跑一次"
+				let solutionLoadInFlight = false;
+				let solutionLoadQueued = false;
 				async function handlePanelMessage(message: PanelToExtensionMessage, panel: vscode.WebviewPanel, q: any) {
 					if (message.type === 'loadSolution') {
+						const seq = beginRender();
+						let partialFetch = false;
 						// 刷新：先立即渲染缓存内容，后台重取；网络慢/波动时不再长时间挂在"加载题解中"
 						const cachedSolution = solutionHtmlCache.get(q.titleSlug);
 						if (cachedSolution) {
-							safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', cachedSolution));
+							safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, activeTabRef, cachedSolution));
 						}
+						if (solutionLoadInFlight) {
+							solutionLoadQueued = true;
+							return;
+						}
+						solutionLoadInFlight = true;
 						const loadStart = Date.now();
 						const stepLog = (label: string) => { console.log(`[loadSolution ${q.titleSlug}] ${label}: ${Date.now() - loadStart}ms`); };
 						try {
@@ -1487,7 +1675,7 @@ if (article && article.content) {
 													<div class="solution-section">
 														<h2>📖 官方题解</h2>
 														<div class="article-head">
-															${articleAvatar ? `<img class="article-avatar" src="${escapeHtml(articleAvatar)}" alt="" onerror="this.remove()" />` : ''}
+															${articleAvatar ? `<img class="article-avatar" src="${escapeHtml(articleAvatar)}" alt="" />` : ''}
 															<span>${escapeHtml(articleAuthor)}</span>
 															<span class="article-badge">👑 官方</span>
 															${articleDate ? `<span>${articleDate}</span>` : ''}
@@ -1499,6 +1687,7 @@ if (article && article.content) {
 										}
 									} catch (e) {
 										// 官方文章拉取失败时静默跳过，回退到 question.solution 的文字内容
+									partialFetch = true;
 									}
 								}
 								stepLog('official article');
@@ -1564,7 +1753,7 @@ if (topArticle && topArticle.content) {
 													<div class="solution-section">
 														<h2>⭐ 社区精选题解（含代码）</h2>
 														<div class="article-head">
-															${topAvatar ? `<img class="article-avatar" src="${escapeHtml(topAvatar)}" alt="" onerror="this.remove()" />` : ''}
+															${topAvatar ? `<img class="article-avatar" src="${escapeHtml(topAvatar)}" alt="" />` : ''}
 															<span>${escapeHtml(topAuthor)}</span>
 															${topDate ? `<span>${topDate}</span>` : ''}
 															<span>👍 ${topArticle.upvoteCount}</span>
@@ -1575,41 +1764,94 @@ if (topArticle && topArticle.content) {
 										}
 									} catch (e) {
 										// 拉取精选题解失败时静默跳过，不影响其余内容
+									partialFetch = true;
 									}
 								}
 								stepLog('community pick');
 
+								// 子请求失败造成的缺块内容不得覆盖/渲染成正式内容（限流时会缺官方题解块，
+								// 表现为"官方题解消失且刷新不回来"）：有缓存就保留缓存并提示
+								if (partialFetch && cachedSolution) {
+									stepLog('partial fetch, keep cache');
+									vscode.window.showWarningMessage('题解刷新不完整（部分请求失败），已保留上次内容');
+									return;
+								}
 								if (!solutionHtml) {
+									if (cachedSolution) {
+										// 官方+社区全空多为限流/异常响应：保留缓存，不把"暂无题解"写进缓存
+										stepLog('empty result, keep cache');
+										vscode.window.showWarningMessage('题解接口返回为空（可能触发限流），已保留上次内容');
+										return;
+									}
 									solutionHtml = '<div class="loading">暂无题解</div>';
 								}
 
 								solutionHtml = await localizeContentImages(solutionHtml, panel, context, leetCodeApi);
-								stepLog('localize');
-								// 内容与缓存一致时跳过二次赋值（首个赋值已带 nonce 渲染缓存），避免连续两次全页刷新闪烁
-								if (solutionHtml === cachedSolution) {
-									stepLog('same content, page already shown');
-								} else {
-									solutionHtmlCache.set(q.titleSlug, solutionHtml);
-									safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', solutionHtml));
+									stepLog('localize');
+									if (solutionHtml !== cachedSolution) {
+										solutionHtmlCache.set(q.titleSlug, solutionHtml);
+									}
+									// 内容与缓存一致时跳过二次赋值（首个赋值已带 nonce 渲染缓存），避免连续两次全页刷新闪烁；
+									// 世代号不符时跳过渲染（期间已有更新的请求，最后点击胜出）
+									if (solutionHtml === cachedSolution) {
+										stepLog('same content, page already shown');
+									} else if (!isCurrentRender(seq)) {
+										stepLog('stale request, skip render');
+									} else {
+										safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, activeTabRef, solutionHtml));
+									}
+									stepLog('done');
+								})(), 60000, '题解加载超时（60 秒）');
+							} catch (error) {
+								if (!isCurrentRender(seq)) {
+									return; // 过期请求的失败不打扰用户
 								}
-								stepLog('done');
-							})(), 60000, '题解加载超时（60 秒）');
-						} catch (error) {
-							// 有缓存：保留缓存内容并提示；无缓存：展示错误页（错误页生成再失败则退回最小页面）
-							const failMsg = errMsg(error);
-							if (cachedSolution) {
-								vscode.window.showWarningMessage(`题解刷新失败，已保留上次内容：${failMsg}`);
-								return;
+								if (/disposed/i.test(errMsg(error))) {
+									return; // 面板已关闭的晚到失败：此前会弹误导性的"题解刷新失败"
+								}
+								// 有缓存：保留缓存内容并提示；无缓存：展示错误页（错误页生成再失败则退回最小页面）
+								const failMsg = errMsg(error);
+								if (cachedSolution) {
+									vscode.window.showWarningMessage(`题解刷新失败，已保留上次内容：${failMsg}`);
+									return;
+								}
+								console.error(`[loadSolution ${q.titleSlug}] FAILED:`, error);
+								try {
+									safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, activeTabRef, `<div class="loading">加载题解失败: ${escapeHtml(failMsg)}</div>`));
+								} catch (e2) {
+									safeSetHtml(panel, `<!DOCTYPE html><html><body><div class="loading">加载题解失败: ${escapeHtml(failMsg)}</div></body></html>`);
+								}
+							} finally {
+								solutionLoadInFlight = false;
+								if (solutionLoadQueued) {
+									// 连点合并：在途完成后补跑一次（仅一次，不再一点击一拉取）
+									solutionLoadQueued = false;
+									void handlePanelMessage({ type: 'loadSolution' } as PanelToExtensionMessage, panel, q).catch((e) => {
+						if (!isDisposedError(e)) { console.error('[handlePanelMessage]', e); }
+					});
+								}
 							}
-							console.error(`[loadSolution ${q.titleSlug}] FAILED:`, error);
-							try {
-								safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', `<div class="loading">加载题解失败: ${escapeHtml(failMsg)}</div>`));
-							} catch (e2) {
-								safeSetHtml(panel, `<!DOCTYPE html><html><body><div class="loading">加载题解失败: ${escapeHtml(failMsg)}</div></body></html>`);
+} else if (message.type === 'showCachedSolution') {
+							// 返回列表：只渲染缓存、不后台重取——重取会因点赞数等微小差异触发
+							// 阅读中的二次整页重建（闪屏+滚动归零）；数据更新走 🔄 刷新
+							beginRender();
+							activeTabRef = 'solution';
+							const backCached = solutionHtmlCache.get(q.titleSlug);
+							if (backCached) {
+								safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', backCached));
+							} else {
+								void handlePanelMessage({ type: 'loadSolution' } as PanelToExtensionMessage, panel, q).catch((e) => {
+						if (!isDisposedError(e)) { console.error('[handlePanelMessage]', e); }
+					});
 							}
-						}
-} else if (message.type === 'reloadProblem') {
+						} else if (message.type === 'tabChanged') {
+							// 页面脚本上报标签切换：异步重建按用户当前所在标签渲染
+							if (message.tab === 'problem' || message.tab === 'solution') {
+								activeTabRef = message.tab;
+							}
+						} else if (message.type === 'reloadProblem') {
 							// 右键刷新题目描述：重新拉取题目内容（KaTeX/CDN 加载失败时重建页面即可恢复）
+							const seq = beginRender();
 							try {
 								const freshData = await leetCodeApi.getQuestionContent(q.titleSlug);
 								const fresh = freshData?.data?.question;
@@ -1617,10 +1859,14 @@ if (topArticle && topArticle.content) {
 									Object.assign(q, fresh);
 									questionContent = fresh.translatedContent || fresh.content;
 								}
-								safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'problem'));
+								if (isCurrentRender(seq)) {
+									safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, activeTabRef, solutionHtmlCache.get(q.titleSlug) ?? ''));
+								}
 							} catch (error) {
-								vscode.window.showErrorMessage(`刷新题目描述失败: ${errMsg(error)}`);
-								safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'problem'));
+								if (!isDisposedError(error)) { vscode.window.showErrorMessage(`刷新题目描述失败: ${errMsg(error)}`); }
+								if (isCurrentRender(seq)) {
+									safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, activeTabRef, solutionHtmlCache.get(q.titleSlug) ?? ''));
+								}
 							}
 						} else if (message.type === 'playVideo') {
 							try {
@@ -1700,9 +1946,11 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp4');
 											}
 											await vscode.workspace.fs.writeFile(mp3Uri, new Uint8Array(out2));
 										}
-										try { core.FS.deleteFile('/in.ts'); } catch (e2) { /* 忽略清理失败 */ }
-									} catch (e) {
+																			} catch (e) {
 										throw new Error('视频转码失败: ' + (e instanceof Error ? e.message : String(e)));
+									} finally {
+										// 失败路径同样清理 MEMFS（否则滞留至多 32MB 的 TS 直到下次播放覆盖）
+										try { core.FS.deleteFile('/in.ts'); } catch (e2) { /* 忽略清理失败 */ }
 									}
 								}
 								let audioB64: string | undefined;
@@ -1730,12 +1978,13 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp4');
 								playAuth: play.playAuth,
 								coverUrl: play.coverUrl || '',
 								audioData: play.audioB64,
+								requestId: message.requestId,
 								pageUrl: message.pageUrl
 							};
-							panel.webview.postMessage(readyMsg);
+							try { await panel.webview.postMessage(readyMsg); } catch (e) { /* 面板已关闭：晚到结果丢弃 */ }
 						} catch (error) {
-							vscode.window.showWarningMessage(`视频题解加载失败：${errMsg(error) || '未知错误'}`);
-							panel.webview.postMessage({ type: 'videoReady', error: true, pageUrl: message.pageUrl } satisfies ExtensionToPanelMessage);
+							if (!isDisposedError(error)) { vscode.window.showWarningMessage(`视频题解加载失败：${errMsg(error) || '未知错误'}`); }
+							try { await panel.webview.postMessage({ type: 'videoReady', requestId: message.requestId, error: true, pageUrl: message.pageUrl } satisfies ExtensionToPanelMessage); } catch (e) { /* 面板已关闭：晚到结果丢弃 */ }
 						}
 					} else if (message.type === 'videoDebug') {
 							console.log('[videoDebug]', message.info);
@@ -1751,22 +2000,27 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp4');
 						await vscode.env.clipboard.writeText(String(message.text || ''));
 						vscode.window.showInformationMessage('已复制代码');
 					} else if (message.type === 'openArticle') {
+						const seq = beginRender();
 						try {
 							const articleData = await leetCodeApi.getSolutionArticle(message.slug);
 							const article = articleData?.data?.solutionArticle;
+							if (!article) {
+								// 文章被删除/不可见时接口正常返回空，此前静默无反应
+								vscode.window.showInformationMessage('该题解不存在或已被删除');
+							}
 							if (article) {
 // 清理内容中的 iframe，避免 webview 中被重定向为登录页
 									const cleanedArticle = sanitizeSolutionContent(article.content || '');
 									let articleHtml = `
 										<div class="solution-section">
-											<button onclick="vscode.postMessage({type:'loadSolution'})" style="background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-bottom:20px;">← 返回列表</button>
+											<button data-back-list="1" style="background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;padding:8px 16px;border-radius:4px;cursor:pointer;margin-bottom:20px;">← 返回列表</button>
 											<h2>${escapeHtml(article.title)}</h2>
 											<div class="article-meta" style="margin-bottom:20px;">👍 ${article.upvoteCount} | 作者: ${escapeHtml(article.author?.profile?.realName || article.author?.username || '匿名')}${article.byLeetcode ? ' | 👑 官方' : ''}</div>
 											<div class="solution-content">${renderMarkdownToHtml(cleanedArticle, 'all')}</div>
 										</div>
 									`;
 								articleHtml = await localizeContentImages(articleHtml, panel, context, leetCodeApi);
-									safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, 'solution', articleHtml));
+									if (isCurrentRender(seq)) { safeSetHtml(panel, generatePanelHtml(q, title, difficulty, questionContent, context, panel, activeTabRef, articleHtml)); }
 							}
 						} catch (error) {
 							vscode.window.showErrorMessage(`加载题解失败: ${errMsg(error)}`);
@@ -1789,7 +2043,7 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp4');
 					vscode.window.showErrorMessage('未获取到题面数据（接口返回为空），请稍后重试');
 				}
 			} catch (error) {
-				vscode.window.showErrorMessage(`加载题目失败: ${errMsg(error)}`);
+				if (!isDisposedError(error)) { vscode.window.showErrorMessage(`加载题目失败: ${errMsg(error)}`); }
 			} finally {
 				pendingProblemOpens.delete(panelKey);
 			}
@@ -1817,7 +2071,7 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp4');
 			return;
 		}
 		// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态导致判题错题
-		const problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(editor.document.uri.fsPath), currentProblem);
+		const problem = await resolveProblemFromFile(leetCodeApi, context, editor.document.uri.fsPath, currentProblem);
 		// 解析失败（返回 null）时已提示：直接中止，防止把当前文件代码判题到错误的题目
 		if (!problem) {
 			return;
@@ -1914,7 +2168,7 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp4');
 		const problem = await resolveProblemFromFile(
 			leetCodeApi,
 			context,
-			path.basename(editor.document.uri.fsPath),
+			editor.document.uri.fsPath,
 			currentProblem
 		);
 		if (!problem) {
@@ -1968,7 +2222,7 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp4');
 		const problem = await resolveProblemFromFile(
 			leetCodeApi,
 			context,
-			path.basename(editor.document.uri.fsPath),
+			editor.document.uri.fsPath,
 			currentProblem
 		);
 		if (!problem) {
@@ -2038,7 +2292,7 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp4');
 		if (editor) {
 			solutionPath = editor.document.uri.fsPath;
 			// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态导致用例套错题
-			problem = await resolveProblemFromFile(leetCodeApi, context, path.basename(solutionPath), currentProblem);
+			problem = await resolveProblemFromFile(leetCodeApi, context, solutionPath, currentProblem);
 		}
 		if (!problem) {
 			return;
@@ -2088,8 +2342,8 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp4');
 		await editor.document.save();
 
 		const filePath = editor.document.uri.fsPath;
-		const fileName = filePath.substring(filePath.lastIndexOf('\\') + 1).replace(/\\/g, '/');
-		const fileDir = filePath.substring(0, filePath.lastIndexOf('\\')).replace(/\\/g, '/');
+		const fileName = path.basename(filePath);
+		const fileDir = path.dirname(filePath);
 
 		// 根据文件扩展名确定运行命令
 		let runCommand: string | null = null;
@@ -2099,9 +2353,9 @@ const mp4Uri = vscode.Uri.joinPath(dirUri, videoId + '_v3.mp4');
 			const currentProblem = context.workspaceState.get<any>('currentProblem');
 			// 题解代码文件：生成并运行调试驱动（自动依赖注入 + 按签名解析用例）；
 			// 本身就是驱动文件（debug/xxx_debug.py）时直接运行
-			if (currentProblem && !fileName.endsWith('_debug.py')) {
+			if (currentProblem && !(parseProblemFileName(fileName)?.isDebug ?? /_debug\.[a-z0-9]+$/i.test(fileName))) {
 				// 以当前文件为准解析题目身份，避免 currentProblem 残留上一题状态
-				const problem = await resolveProblemFromFile(leetCodeApi, context, fileName, currentProblem);
+				const problem = await resolveProblemFromFile(leetCodeApi, context, filePath, currentProblem);
 				if (!problem) {
 					return;
 				}

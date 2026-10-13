@@ -13,10 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-
+      # 版本由 package.json 的 packageManager 字段提供；
+      # 此处再写 with.version 会触发 "Multiple versions of pnpm specified" 直接失败
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11
 
       - uses: actions/setup-node@v4
         with:
@@ -34,3 +33,7 @@ jobs:
 
       - name: Unit tests (pure logic, node:test)
         run: pnpm run test:unit
+
+      # vsce 打包冒烟：.vscodeignore/资源清单/vsce 参数的回归在此拦住（此前只在发版时暴露）
+      - name: Package smoke (vsce)
+        run: npx --yes @vscode/vsce@4.0.0 package --out ci-smoke.vsix --no-dependencies --skip-license --readme-path MARKETPLACE.md

@@ -41,7 +41,10 @@ export function extractExamples(html: string): { input: string; output: string }
     const outputRe = /(?:输出|Output)\s*[：:]\s*([\s\S]*?)(?=\s*(?:解释|Explanation|输入|Input|示例|Example|提示|Constraints|进阶|Follow-up|说明)\s*[：:]?|$)/i;
     const inputRe = /(?:输入|Input)\s*[：:]\s*([\s\S]*?)(?=\s*(?:输出|Output|解释|Explanation|示例|Example|提示|Constraints|进阶|Follow-up|说明)\s*[：:]?|$)/i;
     const entries: { input: string; output: string }[] = [];
-    for (const segment of segments) {
+    // 有「示例 N」标题时，首段是示例 1 之前的题面正文——说明里的 输入/输出 排版
+    // 会产出伪条目令期望与示例整列错位；无标题（裸输入/输出排版）时才解析整段
+    const bodySegments = segments.length > 1 ? segments.slice(1) : segments;
+    for (const segment of bodySegments) {
         const out = outputRe.exec(segment);
         if (out && out[1].trim()) {
             const inp = inputRe.exec(segment);
@@ -57,6 +60,64 @@ export function extractExamples(html: string): { input: string; output: string }
  */
 export function extractExpectedOutputs(html: string): string[] {
     return extractExamples(html).map((e) => e.output);
+}
+
+/**
+ * Python 风格单引号字符串归一为双引号（引号/转义感知，不跨字符串边界替换）：
+ * 双引号串原样带过（内含撇号不动），单引号串转为双引号串（\' 解除转义、内部 " 转义）。
+ * 出现未闭合引号时原样返回，交给 JSON.parse 判失败。
+ */
+function normalizePythonQuotes(raw: string): string {
+    let out = '';
+    let i = 0;
+    while (i < raw.length) {
+        const ch = raw[i];
+        if (ch === '"') {
+            out += ch;
+            i++;
+            while (i < raw.length) {
+                out += raw[i];
+                if (raw[i] === '\\') {
+                    i++;
+                    if (i < raw.length) {
+                        out += raw[i];
+                    }
+                } else if (raw[i] === '"') {
+                    i++;
+                    break;
+                }
+                i++;
+            }
+            continue;
+        }
+        if (ch === "'") {
+            let body = '';
+            let closed = false;
+            i++;
+            while (i < raw.length) {
+                if (raw[i] === '\\') {
+                    body += raw[i + 1] === "'" ? "'" : raw[i] + (raw[i + 1] ?? '');
+                    i += 2;
+                    continue;
+                }
+                if (raw[i] === "'") {
+                    i++;
+                    closed = true;
+                    break;
+                }
+                body += raw[i];
+                i++;
+            }
+            if (!closed) {
+                return raw;
+            }
+            out += '"' + body.replace(/"/g, '\\"') + '"';
+            continue;
+        }
+        out += ch;
+        i++;
+    }
+    return out;
 }
 
 /**
@@ -129,8 +190,10 @@ function parseInputValues(inputText: string): string[] | null {
         if (!raw) {
             return null;
         }
-        // 中文题面示例输入常用 Python 风格单引号（如 [['A','B']]），归一为双引号再解析
-        const normalized = raw.replace(/'([^']*)'/g, '"$1"');
+        // 中文题面示例输入常用 Python 风格单引号（如 [['A','B']]），归一为双引号再解析。
+        // 必须转义感知：混合引号（["it's", 'x']）下朴素正则会跨串替换，产出坏 JSON
+        // 使按值配对整体降级为位置配对
+        const normalized = normalizePythonQuotes(raw);
         try {
             JSON.parse(normalized);
         } catch {
@@ -168,10 +231,11 @@ export function extractExampleInputs(html: string): unknown[][] {
 
 /**
  * 从题解/调试文件名解析题目身份：扩展生成的文件名为 {题号}_{slug}.{ext}，
- * 调试驱动为 {题号}_{slug}_debug.{ext}。解析失败返回 null。
+ * 调试驱动为 {题号}_{slug}_debug.{ext}，跨设备恢复副本为 {题号}_{slug}_restored.{ext}
+ * （副本仍可按同题运行/提交）。解析失败返回 null。
  */
 export function parseProblemFileName(fileName: string): { questionId: string; titleSlug: string; isDebug: boolean } | null {
-    const m = fileName.match(/^(\d+)_([a-z0-9-]+?)(?:_debug)?\./i);
+    const m = fileName.match(/^(\d+)_([a-z0-9-]+?)(?:_(?:debug|restored))?\./i);
     if (!m) {
         return null;
     }

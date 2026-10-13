@@ -84,6 +84,11 @@
 				"title": "LeetCode: 用判题失败用例本地调试"
 			},
 			{
+				"command": "leetcode.newSolutionFile",
+				"title": "LeetCode: 用其他语言新建题解文件",
+				"icon": "$(new-file)"
+			},
+			{
 				"command": "leetcode.customTest",
 				"title": "LeetCode: 用自定义用例测试",
 				"icon": "$(beaker)"

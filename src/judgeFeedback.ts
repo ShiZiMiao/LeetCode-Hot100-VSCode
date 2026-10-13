@@ -55,6 +55,7 @@ export function tryBeginJudge(): boolean {
 export async function pollJudgeResult(api: LeetCodeApi, judgeId: string): Promise<JudgeCheck | undefined> {
 	let waited = 0;
 	let delay = 1000;
+	let terminalStrikes = 0;
 	judgeStatusBar.text = '$(sync~spin) LeetCode 判题中…';
 	judgeStatusBar.show();
 	try {
@@ -79,6 +80,18 @@ export async function pollJudgeResult(api: LeetCodeApi, judgeId: string): Promis
 			// 会话过期（status_code 1002）判题永远等不来，提前终止并报错（同时 onSessionExpired 会 toast）
 			if (check?.status_code === 1002) {
 				throw new Error('LeetCode 会话已过期，请重新登录后再试');
+			}
+			// 判题侧失败终态：连续 2 次出现非进行中状态即报错终止——此前只认 SUCCESS，
+			// 其余终态会退避轮询烧满 90s 后报"超时"，把服务端错误伪装成网络慢
+			const stateStr = String(check?.state || '');
+			const inProgress = !stateStr || stateStr === 'PENDING' || stateStr === 'STARTED' || stateStr === 'JUDGING';
+			if (!inProgress) {
+				terminalStrikes += 1;
+				if (terminalStrikes >= 2) {
+					throw new Error(`判题未正常完成（状态 ${stateStr || '未知'}），可稍后重试`);
+				}
+			} else {
+				terminalStrikes = 0;
 			}
 			delay = Math.min(Math.round(delay * 1.5), 5000);
 		}

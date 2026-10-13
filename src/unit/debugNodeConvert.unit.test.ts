@@ -51,7 +51,8 @@ test('Python 驱动生成：入参转换已接入调用点（死代码回归防�
     assert.ok(gen);
     assert.ok(gen!.content.includes('call_args = [convert('), 'convert 必须作用于入参');
     assert.ok(gen!.content.includes('result = func(*call_args)'), '调用点应传转换后的参数');
-    assert.ok(gen!.content.includes('ann = str(annotation)'), '注解需字符串化后判定（类对象直接 in 会 TypeError）');
+    assert.ok(gen!.content.includes('ann = str(param.annotation)'), '注解需字符串化后判定（类对象直接 in 会 TypeError）');
+    assert.ok(gen!.content.includes('node_kind'), '无注解入参须有参数名兜底判定');
     assert.ok(gen!.content.includes('ret_ann'), '需按返回注解处理空链表/空树结果');
 });
 

@@ -20,9 +20,11 @@ function entryClassOf(codeSnippet: string): string {
 /**
  * Java 生成文件的类名（PascalCase(titleSlug) + Debug）。
  * 文件名与 public 类名必须一致（Java 编译要求），模板与打包名共用本函数防漂移。
+ * 数字开头的 slug（如 3sum）会生成非法 Java 标识符，补 _ 前缀（_3sumDebug）。
  */
 export function javaClassNameOf(titleSlug: string): string {
-    return titleSlug.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('') + 'Debug';
+    const body = titleSlug.split('-').map(s => s.charAt(0).toUpperCase() + s.slice(1)).join('') + 'Debug';
+    return /^\d/.test(body) ? `_${body}` : body;
 }
 
 export function javaDebugDriver(questionId: string, titleSlug: string, _testCases: string, codeSnippet: string, isSpecial: boolean): string {

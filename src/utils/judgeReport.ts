@@ -175,7 +175,8 @@ export function collectJudgeCaseInfos(check: JudgeCheck, inputFallback?: string)
                 output: formatJudgeValue(outArr[i]),
                 expected: formatJudgeValue(expArr[i]),
                 passed: compare[i] === '1',
-                known: compareValid
+                // compare_result 变短时超出部分从未判定，不得标成"确定失败"（会误弹调试失败用例按钮）
+                known: compareValid && i < compare.length
             });
         }
         return infos;
@@ -212,9 +213,10 @@ export function buildJudgeReport(check: JudgeCheck, inputFallback?: string, ok?:
         // 判题响应里 memory 为字节数，按 KB/MB 自适应展示
         lines.push(`💾 内存消耗: ${check.memory >= 1024 * 1024 ? (check.memory / 1024 / 1024).toFixed(1) + ' MB' : (check.memory / 1024).toFixed(1) + ' KB'}`);
     }
-    // compare_result 为逐用例 0/1 串，第一个 0 即最先未通过的用例
-    if (typeof check.compare_result === 'string' && check.compare_result.length > 0) {
-        const firstFail = check.compare_result.indexOf('0');
+    // compare_result 为逐用例 0/1 串，第一个 0 即最先未通过的用例（混入其他字符时不采信）
+    const compareStr = typeof check.compare_result === 'string' ? check.compare_result : '';
+    if (/^[01]+$/.test(compareStr)) {
+        const firstFail = compareStr.indexOf('0');
         if (firstFail >= 0) { lines.push(`🔍 首个未通过用例: 第 ${firstFail + 1} 个`); }
     }
     const compileError = String(check.full_compile_error || check.compile_error || '').trim();

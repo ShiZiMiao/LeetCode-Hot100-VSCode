@@ -19,9 +19,20 @@ export function buildLeetCodeCookie(sessionRaw: string, csrfRaw: string): string
     if (mSession && mCsrf) {
         return `LEETCODE_SESSION=${mSession[1]}; csrftoken=${mCsrf[1]}`;
     }
-    // 裸值两列：按键名前缀补全后拼接（任一为空则无法组装）
-    if (s && c) {
-        return `LEETCODE_SESSION=${s}; csrftoken=${c}`;
+    // 混合形态（一侧 KEY=VALUE、另一侧裸值）：剥掉输入里已有的键前缀再拼接，
+    // 否则会产出 LEETCODE_SESSION=LEETCODE_SESSION=... 的双前缀坏 Cookie
+    const stripKey = (raw: string, key: string): string => {
+        const keyed = raw.match(new RegExp('(?:^|[;\\s])' + key + '=([^;\\s]+)', 'i'));
+        if (keyed) {
+            return keyed[1];
+        }
+        const bare = raw.match(/^[^;\s]+/);
+        return bare ? bare[0] : '';
+    };
+    const bareSession = stripKey(s, 'LEETCODE_SESSION');
+    const bareCsrf = stripKey(c, 'csrftoken');
+    if (bareSession && bareCsrf) {
+        return `LEETCODE_SESSION=${bareSession}; csrftoken=${bareCsrf}`;
     }
     return null;
 }

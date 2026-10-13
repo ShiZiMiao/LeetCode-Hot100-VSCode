@@ -34,6 +34,12 @@ const SUPPORTED_LANGUAGE_LIST: LanguageInfo[] = [
 /** 对外只读语言表（选择器/保存路径共用） */
 export const SUPPORTED_LANGUAGES: ReadonlyArray<Readonly<LanguageInfo>> = SUPPORTED_LANGUAGE_LIST;
 
+/** 文件扩展名 → 内部规范语言 slug（未映射返回 undefined） */
+export function langSlugOfExtension(ext: string): string | undefined {
+    const e = ext.toLowerCase();
+    return SUPPORTED_LANGUAGE_LIST.find(l => l.extension === e)?.slug;
+}
+
 /**
  * leetcode.cn 真实 slug → 内部规范 slug 的别名：
  * Go 在 leetcode.cn 是 'golang'（非 'go'），C++ 的 'c++' 写法与 python 别名一并归一，

@@ -33,7 +33,8 @@ export function detectSpecialProblem(lang: string, codeSnippet: string, titleSlu
 
 /**
  * 生成调试文件的内容。
- * expectedOutputs/exampleInputs/sourceFilePath 仅 Python 驱动消费（其余语言为手动模板），
+ * expectedOutputs/sourceFilePath 仅 Python 驱动消费、exampleInputs 为 Python/JS/TS 驱动
+ * 按值分组用例的锚点（其余语言为手动模板），
  * 驱动需要题面示例期望与输入做按值配对；示例输入提取不全时传 [] 退回位置配对。
  */
 export function generateDebugFile(
@@ -74,13 +75,13 @@ export function generateDebugFile(
         case 'javascript':
             return {
                 fileName: `${questionId}_${titleSlug}_debug.js`,
-                content: jsTsDebugDriver(questionId, titleSlug, testCases, codeSnippet, isSpecial, false)
+                content: jsTsDebugDriver(questionId, titleSlug, testCases, codeSnippet, isSpecial, false, exampleInputs)
             };
 
         case 'typescript':
             return {
                 fileName: `${questionId}_${titleSlug}_debug.ts`,
-                content: jsTsDebugDriver(questionId, titleSlug, testCases, codeSnippet, isSpecial, true)
+                content: jsTsDebugDriver(questionId, titleSlug, testCases, codeSnippet, isSpecial, true, exampleInputs)
             };
 
         case 'golang':

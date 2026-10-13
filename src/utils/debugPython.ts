@@ -7,13 +7,41 @@
  * - 空链表/空树结果按判题序列化 []；原地修改无返回值题取被修改入参比对
  */
 
-/** 从 python3 代码片段提取入口函数名（跳过注释、优先 class Solution 后第一个 def） */
+/**
+ * 从 python3 代码片段提取入口函数名（跳过注释、限定 class Solution 内的 def）。
+ * helper 写在入口前会取错函数：类内被调用过的是 helper，入口取没被调用的那个；
+ * 都被调用（如入口自递归 + helper）时退回第一个 def。
+ */
 function pythonFuncName(codeSnippet: string): string {
     const codeNoComments = codeSnippet.replace(/^\s*#.*$/gm, '');
-    const classIdx = codeNoComments.indexOf('class Solution');
-    const funcBody = classIdx !== -1 ? codeNoComments.slice(classIdx) : codeNoComments;
-    const funcMatch = funcBody.match(/def\s+(\w+)\s*\(/);
-    return funcMatch ? funcMatch[1] : 'solution';
+    const classMatch = codeNoComments.match(/(^|\n)\s*class\s+Solution\b/);
+    const funcBody = classMatch ? codeNoComments.slice(classMatch.index) : codeNoComments;
+    const names: string[] = [];
+    const defRe = /def\s+(\w+)\s*\(/g;
+    let m: RegExpExecArray | null;
+    while ((m = defRe.exec(funcBody)) !== null) {
+        if (!names.includes(m[1])) {
+            names.push(m[1]);
+        }
+    }
+    if (names.length <= 1) {
+        return names[0] || 'solution';
+    }
+    const uncalled = names.filter((name) => {
+        const useRe = new RegExp('\\b' + name + '\\s*\\(', 'g');
+        let uses = 0;
+        while (useRe.exec(codeNoComments) !== null) {
+            uses++;
+        }
+        const defRe2 = new RegExp('def\\s+' + name + '\\s*\\(', 'g');
+        let defs = 0;
+        while (defRe2.exec(codeNoComments) !== null) {
+            defs++;
+        }
+        return uses - defs === 0;
+    });
+    // 兜底取最后一个候选：入口多为后置的公开方法（helper/死函数前置时取 names[0] 会调错）
+    return uncalled.length ? uncalled[uncalled.length - 1] : names[names.length - 1];
 }
 
 export function pythonDebugDriver(
@@ -331,6 +359,22 @@ def _normalize(v):
     return v
 
 
+def _loose_eq(a, b):
+    """递归比对：tuple/list 等价、浮点按 1e-5 容差（判题机口径，如第 4 题中位数）；
+    bool 与 int/float 不可互换（Python 中 True == 1，判题语义区分）"""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        if isinstance(a, float) or isinstance(b, float):
+            return abs(float(a) - float(b)) <= 1e-5
+        return a == b
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_loose_eq(x, y) for x, y in zip(a, b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return set(a) == set(b) and all(_loose_eq(a[k], b[k]) for k in a)
+    return a == b
+
+
 def same_value(actual, expected):
     """结果与期望比对：先按 LC 判题语义（tuple/list 等价、int/float 数值相等）比较；
     再对顺序无关的输出（嵌套列表或纯字符串列表，如字母异位词分组/全排列/子集/
@@ -338,7 +382,7 @@ def same_value(actual, expected):
     # bool 与 int/float 不可互换：Python 中 True == 1，但判题语义区分（期望 true 与 1 不同）
     if isinstance(actual, bool) or isinstance(expected, bool):
         return type(actual) is type(expected) and actual == expected
-    if _normalize(actual) == _normalize(expected):
+    if _loose_eq(actual, expected):
         return True
     if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
         nested = (bool(actual) and all(isinstance(x, (list, tuple)) for x in actual)
@@ -434,36 +478,78 @@ if __name__ == "__main__":
             ex_count = len(expected_meta)
             groups = None
             group_extras = None
-            if n > 0 and ex_count > 0 and len(values) % ex_count == 0:
+            # 按题面示例的入参个数分组（示例同构，附加/隐藏用例只是增加组数；带校验参数的
+            # 题如环形链表 pos 与 head 同组）。旧启发式按"值数÷示例数"推断每组值数，隐藏
+            # 用例成整数倍时会把用例吞进附加参数永不执行（如 104：2 示例 + 2 隐藏只跑 2 个）
+            k = 0
+            if example_inputs and all(isinstance(ei, list) and len(ei) == len(example_inputs[0]) for ei in example_inputs):
+                k = len(example_inputs[0])
+            if n > 0 and k >= n and len(values) % k == 0:
+                total_groups = len(values) // k
+                groups = [values[i * k:(i + 1) * k][:n] for i in range(total_groups)]
+                group_extras = [values[i * k:(i + 1) * k][n:] for i in range(total_groups)]
+            if groups is None and n > 0 and ex_count > 0 and len(values) % ex_count == 0:
                 per = len(values) // ex_count
-                if per >= n:
-                    # 按题面示例数分组：每组前 n 个值作为入参（兼容带校验参数的题，如环形链表的 pos）
-                    groups = [[v for v in values[i * per:(i + 1) * per][:n]] for i in range(ex_count)]
+                # 无示例锚点的兜底：仅当每例组头是结构、且确实带标量附加参数（如环形链表 pos）
+                # 才按示例数分组；per < n 会漏参、附加位是结构/组头是标量（隐藏用例成整数倍的
+                # 标量入参题）按此分组会吞用例——这两种形态都走按 n 分组
+                if per == n:
+                    groups = [values[i * per:(i + 1) * per][:n] for i in range(ex_count)]
                     group_extras = [values[i * per:(i + 1) * per][n:] for i in range(ex_count)]
+                elif per > n:
+                    heads = [values[i * per] for i in range(ex_count)]
+                    extras_flat = [values[i * per + n] for i in range(ex_count)]
+                    if (all(isinstance(h, (list, tuple, dict)) for h in heads)
+                            and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in extras_flat)):
+                        groups = [values[i * per:(i + 1) * per][:n] for i in range(ex_count)]
+                        group_extras = [values[i * per:(i + 1) * per][n:] for i in range(ex_count)]
             if groups is None and n > 0 and len(values) % n == 0:
                 groups = [values[i:i + n] for i in range(0, len(values), n)]
+                group_extras = [[] for _ in groups]
             if groups is None:
                 groups = [values]
-            if group_extras is None:
-                group_extras = [[] for _ in groups]
+                group_extras = [[]]
 
-            def convert(value, annotation):
-                """按注解把普通列表转换为 ListNode/TreeNode（判题环境默认类型）"""
-                ann = str(annotation)
-                for name, node_cls in (("ListNode", ListNode), ("TreeNode", TreeNode)):
-                    if name not in ann:
-                        continue
-                    if value is None:
-                        return None
-                    # List[ListNode] 序列形态（合并 K 个链表）或值本身是嵌套列表 → 逐个转换
-                    if ("List[" in ann or "list[" in ann or "Sequence[" in ann
-                            or (isinstance(value, list) and value and isinstance(value[0], list))):
-                        return [node_cls.from_list(v) for v in (value or [])]
-                    if not isinstance(value, (list, tuple)):
-                        # 节点引用以标量值给出（如 LCA 题 p = 5）：降级为单节点防迭代崩溃
-                        return node_cls.from_list([value])
-                    return node_cls.from_list(value)
-                return value
+            def node_kind(param, value):
+                """节点类型判定：类型注解优先；注解缺失（官方题解的 Python 风格代码常
+                省略标注，如 def maxDepth(self, root):）按参数名 + 值形状兜底"""
+                ann = str(param.annotation)
+                for nm in ("ListNode", "TreeNode"):
+                    if nm in ann:
+                        if "List[" in ann or "list[" in ann or "Sequence[" in ann:
+                            return nm + "List"
+                        return nm
+                if param.annotation is not inspect.Parameter.empty:
+                    return ""
+                lname = (param.name or "").lower()
+                if lname.startswith(("lists", "listof")) and isinstance(value, list) and value and isinstance(value[0], list):
+                    return "ListNodeList"
+                if lname.startswith(("head", "l1", "l2", "list1", "list2", "list")):
+                    return "ListNode"
+                if lname.startswith(("root", "tree")):
+                    return "TreeNode"
+                if lname in ("p", "q", "node"):
+                    return "nodeRef"
+                return ""
+
+            def convert(value, param):
+                """按参数类型把普通列表转换为 ListNode/TreeNode（判题环境默认类型）"""
+                kind = node_kind(param, value)
+                if not kind or kind == "nodeRef":
+                    return value
+                if kind == "ListNodeList" or kind == "TreeNodeList":
+                    seq_cls = ListNode if kind == "ListNodeList" else TreeNode
+                    return [seq_cls.from_list(v) for v in (value or [])]
+                node_cls = TreeNode if kind.startswith("TreeNode") else ListNode
+                if value is None:
+                    return None
+                # List[ListNode] 序列形态（合并 K 个链表）或值本身是嵌套列表 → 逐个转换
+                if isinstance(value, list) and value and isinstance(value[0], list):
+                    return [node_cls.from_list(v) for v in value]
+                if not isinstance(value, (list, tuple)):
+                    # 节点引用以标量值给出（如 LCA 题 p = 5）：降级为单节点防迭代崩溃
+                    return node_cls.from_list([value])
+                return node_cls.from_list(value)
 
             def run_and_compare(args, idx):
                 """运行一个示例并比对期望输出；返回 (是否通过, 是否已校验)"""
@@ -474,29 +560,29 @@ if __name__ == "__main__":
                         key = list(args) + (list(group_extras[idx]) if idx < len(group_extras) else [])
                         ei = -1
                         for cand, ins in enumerate(example_inputs):
-                            if len(ins) == len(key) and all(_normalize(a) == _normalize(b) for a, b in zip(ins, key)):
+                            if len(ins) == len(key) and all(_loose_eq(a, b) for a, b in zip(ins, key)):
                                 ei = cand
                                 break
                         if ei == -1:
                             # 题面未展示的附加参数会拼长 key：退一步按展示参数与候选前缀配对
                             for cand, ins in enumerate(example_inputs):
-                                if len(ins) >= len(args) and all(_normalize(a) == _normalize(b) for a, b in zip(ins, args)):
+                                if len(ins) >= len(args) and all(_loose_eq(a, b) for a, b in zip(ins, args)):
                                     ei = cand
                                     break
                     print(f"示例{idx + 1} 输入: {args}")
-                    # 按签名注解转换入参（ListNode/TreeNode 是判题环境的默认参数类型）
-                    call_args = [convert(v, sig_params[i].annotation) if i < len(sig_params) else v
+                    # 按签名参数类型转换入参（ListNode/TreeNode 是判题环境的默认参数类型）
+                    call_args = [convert(v, sig_params[i]) if i < len(sig_params) else v
                                  for i, v in enumerate(args)]
                     # 节点引用以值给出（236 LCA 的 p/q 是树内节点）：按值在首个节点结构里查找
                     struct = next((a for a in call_args if hasattr(a, "to_list")), None)
                     if struct is not None:
                         for i2, v2 in enumerate(args):
-                            if (i2 < len(sig_params) and isinstance(v2, (int, float)) and not isinstance(v2, bool)
-                                    and ("ListNode" in str(sig_params[i2].annotation)
-                                         or "TreeNode" in str(sig_params[i2].annotation))):
-                                ref = _find_node(struct, v2)
-                                if ref is not None:
-                                    call_args[i2] = ref
+                            if i2 < len(sig_params) and isinstance(v2, (int, float)) and not isinstance(v2, bool):
+                                kind2 = node_kind(sig_params[i2], v2)
+                                if kind2 in ("ListNode", "TreeNode", "nodeRef"):
+                                    ref = _find_node(struct, v2)
+                                    ref_cls = TreeNode if kind2 == "TreeNode" else ListNode
+                                    call_args[i2] = ref if ref is not None else ref_cls.from_list([v2])
                     # 环形链表题（141/142）：单链表参数且每例多带一个 pos 整数 → 按 pos 尾接成环
                     ex = group_extras[idx] if idx < len(group_extras) else []
                     if (n == 1 and len(call_args) == 1 and len(ex) == 1
@@ -547,7 +633,7 @@ if __name__ == "__main__":
                     return False, False
                 except Exception as ex:
                     print(f"示例{idx + 1} 运行出错: {ex}")
-                    return False, False
+                    return False, True
 
             total = passed = unchecked = 0
             for idx, args in enumerate(groups):

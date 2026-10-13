@@ -9,8 +9,10 @@
 /** webview（题面/题解面板）→ 扩展 */
 export type PanelToExtensionMessage =
 	| { type: 'loadSolution' }
+	| { type: 'showCachedSolution' }
 	| { type: 'reloadProblem' }
-	| { type: 'playVideo'; uuid: string; pageUrl: string }
+	| { type: 'tabChanged'; tab: 'problem' | 'solution' }
+	| { type: 'playVideo'; requestId: number; uuid: string; pageUrl: string }
 	| { type: 'videoDebug'; info: string }
 	| { type: 'openExternal'; url: string }
 	| { type: 'copyCode'; text: string }
@@ -21,6 +23,8 @@ export type PanelToExtensionMessage =
 export type ExtensionToPanelMessage =
 	| {
 			type: 'videoReady';
+			/** 关联发起点击的按钮（多视频并发/页面重建时定位播放器挂载点） */
+			requestId?: number;
 			videoUrl: string;
 			videoId: string;
 			playAuth: string;
@@ -29,4 +33,5 @@ export type ExtensionToPanelMessage =
 			audioData?: string;
 			pageUrl: string;
 	  }
-	| { type: 'videoReady'; error: true; pageUrl: string };
+	| { type: 'videoReady'; requestId?: number; error: true; pageUrl: string }
+	| { type: 'navigate'; tab: 'problem' | 'solution' };

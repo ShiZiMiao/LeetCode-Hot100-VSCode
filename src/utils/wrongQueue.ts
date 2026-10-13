@@ -71,7 +71,8 @@ export function sortWrongByReview(list: WrongEntry[]): WrongEntry[] {
 }
 
 /**
- * "开始复习"候选：按到期时间升序（到期的排最前）取第一个**今天还没复习过**的错题。
+ * "开始复习"候选：按到期时间升序取第一个**已到期且今天还没复习过**的错题。
+ * 未到期的不作为候选（否则会被顺手标成"今日已复习"且提前复习打乱间隔排期）；
  * 返回候选条目与统计（total=错题总数、reviewedCount=今日已复习数、dueRemaining=剩余到期数），
  * reviewedSlugs 为今日已复习 slugs（跨日清理由调用方维护）
  */
@@ -82,7 +83,7 @@ export function pickReviewCandidate(
 ): { entry?: WrongEntry; total: number; reviewedCount: number; dueRemaining: number } {
     const sorted = sortWrongByReview(list);
     const reviewed = new Set(reviewedSlugs);
-    const entry = sorted.find(e => !reviewed.has(e.titleSlug));
+    const entry = sorted.find(e => isReviewDue(e, now) && !reviewed.has(e.titleSlug));
     return {
         entry,
         total: list.length,

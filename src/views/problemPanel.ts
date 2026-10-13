@@ -28,11 +28,21 @@ function sanitizeUnsafeHtml(html: string): string {
 	if (!html) {
 		return html;
 	}
+	const decodeAttrValue = (val: string): string =>
+		val.replace(/^["']|["']$/g, '')
+			.replace(/&#(\d+);?/g, (_, d) => String.fromCharCode(Number(d)))
+			.replace(/&#x([0-9a-f]+);?/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+			.replace(/&colon;/gi, ':')
+			.replace(/\s+/g, '')
+			.toLowerCase();
 	return html
 		.replace(/<(script|iframe|object|embed)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
 		.replace(/<(script|iframe|object|embed)\b[^>]*\/?>/gi, '')
-		.replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
-		.replace(/(href|src)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, '$1="#"');
+		// on* 事件属性：空白或 / 均可作分隔符（img/onerror … 形态）
+		.replace(/[\s/]on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, ' ')
+		// 伪协议：引号/未引号/实体编码变体（j&#97;vascript:）统一按解码值判定
+		.replace(/(href|src|xlink:href|srcset|formaction)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, (m, attr: string, val: string) =>
+			/^(?:javascript|vbscript|data:text\/html)/.test(decodeAttrValue(val)) ? `${attr}="#"` : m);
 }
 
 export async function localizeContentImages(html: string, panel: vscode.WebviewPanel, context: vscode.ExtensionContext, api: LeetCodeApi): Promise<string> {
@@ -78,7 +88,11 @@ export async function localizeContentImages(html: string, panel: vscode.WebviewP
 	const succeeded = new Map<string, string>();
 	for (const src of srcs) {
 		if (!pending.includes(src)) {
-			succeeded.set(src, panel.webview.asWebviewUri(fileUriOf.get(src)!).toString());
+			try {
+				succeeded.set(src, panel.webview.asWebviewUri(fileUriOf.get(src)!).toString());
+			} catch (e) {
+				// 面板已关闭时 asWebviewUri 抛 disposed：单图跳过，不冒泡成误导性报错
+			}
 		}
 	}
 	const CONCURRENCY = 6;
@@ -114,23 +128,25 @@ function htmlToMarkdown(content: string): string {
 	// 代码围栏先整体抽成占位符再清理标签，否则下面的兜底正则会把代码里的尖括号当
 	// HTML 标签误删/误换（C++ 模板 vector<vector<int>>、注释里的 b<c 均会被命中，
 	// 甚至跨行吞掉后续语言的围栏行，导致多语言代码块无法生成标签页）
+	// 占位符带随机令牌：正文含字面 @@LCCODE0@@ 类文本时不会与占位符碰撞错位
+	const ph = '@@LC' + Math.random().toString(36).slice(2, 10);
 	const codeFences: string[] = [];
 	s = s.replace(/```[\s\S]*?```/g, (m) => {
 		codeFences.push(m);
-		return `@@LCCODE${codeFences.length - 1}@@`;
+		return `${ph}CODE${codeFences.length - 1}@@`;
 	});
 	// 行内代码（反引号 span 与 <code> 标签）同样抽占位符：内容里的尖括号/星号也会被
 	// 下面的标签与行内规则误伤（如 `vector<int>` 被 <i> 规则替换为 vector*）
 	const inlineCodes: string[] = [];
 	s = s.replace(/`[^`\n]+`/g, (m) => {
 		inlineCodes.push(m);
-		return `@@LCINLINE${inlineCodes.length - 1}@@`;
+		return `${ph}INLINE${inlineCodes.length - 1}@@`;
 	});
 	s = s.replace(/<code[^>]*>[\s\S]*?<\/code>/gi, (m) => {
 		// 以反引号 span 的形式还原，与下方 <code>→` 的转换保持等价
 		const inner = m.replace(/^<code[^>]*>/i, '').replace(/<\/code>$/i, '');
 		inlineCodes.push(`\`${inner}\``);
-		return `@@LCINLINE${inlineCodes.length - 1}@@`;
+		return `${ph}INLINE${inlineCodes.length - 1}@@`;
 	});
 	s = s.replace(/<br\s*\/?>/gi, '\n');
 	s = s.replace(/<\/p>\s*/gi, '\n\n');
@@ -154,8 +170,8 @@ function htmlToMarkdown(content: string): string {
 	s = s.replace(/<\/?[a-zA-Z][^>]*>/g, ''); // 兜底：移除其余未知标签
 	s = s.replace(/<!(\[)/g, '!$1'); // 部分文章正文带 <![img](...) 包裹，还原为 ![img](...)
 	// 还原代码围栏与行内代码（占位符不含 < > * 等字符，清理正则改写不到；?? '' 仅兜底）
-	s = s.replace(/@@LCINLINE(\d+)@@/g, (_, idx) => inlineCodes[Number(idx)] ?? '');
-	s = s.replace(/@@LCCODE(\d+)@@/g, (_, idx) => codeFences[Number(idx)] ?? '');
+	s = s.replace(new RegExp(`${ph}INLINE(\\d+)@@`, 'g'), (_, idx) => inlineCodes[Number(idx)] ?? '');
+	s = s.replace(new RegExp(`${ph}CODE(\\d+)@@`, 'g'), (_, idx) => codeFences[Number(idx)] ?? '');
 	return s;
 }
 
@@ -195,9 +211,10 @@ function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 	// 内的乘号星号：否则公式被 <em> 打断成多个文本节点，webview 的 KaTeX auto-render
 	// 无法跨节点匹配 $ 配对，公式会连原始 LaTeX 一起无法渲染
 	const mathParts: string[] = [];
+	const ph = '@@LC' + Math.random().toString(36).slice(2, 10);
 	s = s.replace(/\$\$[\s\S]*?\$\$|\$[^$\n]*?\$/g, (m) => {
 		mathParts.push(m);
-		return `@@MATH${mathParts.length - 1}@@`;
+		return `${ph}MATH${mathParts.length - 1}@@`;
 	});
 	// LeetCode 官方文章动画帧序列：![fig1](url),![fig2](url),...,![figN](url)>
 	// 或旧格式 ![1200](url),![1200](url),...（alt=该帧停留毫秒数）；包裹符残留的 >
@@ -246,7 +263,7 @@ function renderInlineMarkdown(text: string, videoPageUrl?: string): string {
 	s = s.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
 	s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
 	// 还原数学公式（原文原样，$ 分隔符与 LaTeX 命令均保留，交给 Webview 端 KaTeX 渲染）
-	s = s.replace(/@@MATH(\d+)@@/g, (_, idx) => mathParts[Number(idx)] ?? '');
+	s = s.replace(new RegExp(`${ph}MATH(\\d+)@@`, 'g'), (_, idx) => mathParts[Number(idx)] ?? '');
 	return s;
 }
 
@@ -1181,9 +1198,33 @@ export const generatePanelHtml = (
 
 					<script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
-									// 重建页（solution 模式）已内嵌内容：视为已加载，避免再点"题解"标签重复拉取重建
-									let solutionLoaded = ${activeTab === 'solution' && solutionContent ? 'true' : 'false'};
-									let currentTab = '${activeTab}';
+									// 重建页已内嵌题解内容（不论当前显示哪页）：视为已加载，
+										// 避免切到"题解"标签时重复拉取整页重建（闪屏+滚动归零）
+										let solutionLoaded = ${solutionContent ? 'true' : 'false'};
+										let currentTab = '${activeTab}';
+
+										// 新生成的页面回到顶部：VS Code webview 更新 HTML 后可能保留旧页面的滚动位置，
+										// 含延迟重试以覆盖宿主在 load 之后的异步恢复
+										if (window.history && 'scrollRestoration' in window.history) {
+											try { window.history.scrollRestoration = 'manual'; } catch (e) { /* 忽略 */ }
+										}
+										function lcScrollTop() {
+											try {
+												window.scrollTo(0, 0);
+												if (document.documentElement) { document.documentElement.scrollTop = 0; }
+												if (document.body) { document.body.scrollTop = 0; }
+											} catch (e) { /* 忽略 */ }
+										}
+										lcScrollTop();
+										window.addEventListener('load', lcScrollTop);
+										setTimeout(lcScrollTop, 100);
+										setTimeout(lcScrollTop, 500);
+
+										// 头像等图片加载失败移除裂图：CSP 拦截内联 onerror 属性，改走 error 事件委托
+										document.addEventListener('error', function(e) {
+											var t = e.target;
+											if (t && t.classList && t.classList.contains('article-avatar')) { t.remove(); }
+										}, true);
 									
 									// 代码主题判定：直接读代码块 pre 的准确背景（--vscode-textPreformat-background 已生效），
 									// 并把明/暗色板变量直接写入 :root 内联样式——不依赖选择器、属性或探针
@@ -1238,18 +1279,25 @@ document.documentElement.style.setProperty('--lc-built', vars.built);
 
 								
 function switchTab(tab) {
-									currentTab = tab;
+										var tabChanged = currentTab !== tab;
+										currentTab = tab;
 									document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
 								document.querySelector('.tab:nth-child(' + (tab === 'problem' ? '1' : '2') + ')').classList.add('active');
 								
 								document.getElementById('problem-tab').classList.toggle('hidden', tab !== 'problem');
 								document.getElementById('solution-tab').classList.toggle('hidden', tab !== 'solution');
 								
-								if (tab === 'solution' && !solutionLoaded) {
-									solutionLoaded = true;
-									vscode.postMessage({ type: 'loadSolution' });
-								}
-							}
+								// 先上报标签、后触发加载：顺序反了时扩展端的缓存整页重建会用旧的
+									// activeTabRef 渲染，热缓存下点「题解」标签会被弹回「题目描述」
+									if (tabChanged) {
+										lcScrollTop();
+										vscode.postMessage({ type: 'tabChanged', tab: tab });
+									}
+									if (tab === 'solution' && !solutionLoaded) {
+										solutionLoaded = true;
+										vscode.postMessage({ type: 'loadSolution' });
+									}
+									}
 
 							// 刷新当前活动标签：题目描述 → 重新拉取并重建；题解 → 重新加载题解
 							function refreshCurrent() {
@@ -1301,13 +1349,20 @@ function selectLangTab(btn) {
 							}
 							
 							// 视频题解：请求扩展端查询阿里云 VOD playAuth 播放凭证，成功后用 Aliplayer 内嵌播放；
-							// 失败时降级为浏览器播放入口
+							// 失败时降级为浏览器播放入口。每次点击带 requestId，响应回挂到发起按钮
+							// （多视频并发不再互换播放器；页面重建后的孤儿响应给出提示而非静默丢弃）
+							var lcVideoReqSeq = 0;
+							var lcVideoReqBtns = {};
 							function playArticleVideo(btn) {
+								var rid = ++lcVideoReqSeq;
 								btn.setAttribute('data-loading', '1');
+								btn.setAttribute('data-req', String(rid));
+								lcVideoReqBtns[rid] = btn;
 								btn.textContent = '⏳ 正在获取播放信息…';
 								btn.disabled = true;
 								vscode.postMessage({
 									type: 'playVideo',
+									requestId: rid,
 									uuid: btn.getAttribute('data-play-uuid'),
 									pageUrl: btn.getAttribute('data-page-url')
 								});
@@ -1604,11 +1659,12 @@ fsBtn.addEventListener('click', function(e) {
 										e.stopPropagation();
 										if (speedMenu.classList.contains('show')) { hideSpeedMenu(); } else { showSpeedMenu(); }
 									});
-									document.addEventListener('click', function(e) {
-										if (speedMenu.classList.contains('show') && !speedMenu.contains(e.target) && !speedBtn.contains(e.target)) {
-											hideSpeedMenu();
+									function onDocClick(e) {
+											if (speedMenu.classList.contains('show') && !speedMenu.contains(e.target) && !speedBtn.contains(e.target)) {
+												hideSpeedMenu();
+											}
 										}
-									});
+										document.addEventListener('click', onDocClick);
 									var dragging = false;
 									function seekFromEvent(e) {
 										if (!isFinite(v.duration) || v.duration <= 0) { return; }
@@ -1658,13 +1714,14 @@ var hideTimer = null;
 									refresh();
 									// 容器销毁/换源时统一解绑（document 级监听与定时器不随容器回收）
 									lcVideoCleanups.push(function() {
-										clearInterval(audioAlignTimer);
-										clearTimeout(hideTimer);
-										document.removeEventListener('mousemove', onDocMove);
-										document.removeEventListener('mouseup', onDocUp);
-										document.removeEventListener('keydown', onDocKey);
-										audioStop();
-									});
+											clearInterval(audioAlignTimer);
+											clearTimeout(hideTimer);
+											document.removeEventListener('mousemove', onDocMove);
+											document.removeEventListener('mouseup', onDocUp);
+											document.removeEventListener('keydown', onDocKey);
+											document.removeEventListener('click', onDocClick);
+											audioStop();
+										});
 								}
 								
 								function attachAliplayer(container, msg) {
@@ -1688,11 +1745,12 @@ var hideTimer = null;
 												preload: true,
 												controls: false
 											});
-											// Aliplayer 的 video 元素稍后就绪，就绪后接自绘控制栏（该路径无 MP3 音频数据，声音仍走 Aliplayer 自身）
+											// Aliplayer 的 video 元素稍后就绪，就绪后接自绘控制栏。
+											// 声音走 Aliplayer 自身流：剥离 audioData，否则 WebAudio 音轨会与流声音叠加双响
 											(function retry(i) {
 												var av = container.querySelector('video');
 												if (av) {
-													attachCustomControls(container, av, msg);
+													attachCustomControls(container, av, Object.assign({}, msg, { audioData: undefined }));
 												} else if (i < 10) {
 													setTimeout(function() { retry(i + 1); }, 200);
 												}
@@ -1784,9 +1842,32 @@ v.addEventListener('error', fallbackOnFail);
 
 									window.addEventListener('message', function(ev) {
 									var msg = ev.data;
-									if (!msg || msg.type !== 'videoReady') return;
-									var btn = document.querySelector('.video-link[data-loading="1"]');
-									if (!btn) return;
+									if (!msg) return;
+									// 扩展端导航指令（「查看题解」对已开面板）：客户端切标签（未加载时按需触发）
+									if (msg.type === 'navigate') {
+										if (msg.tab === 'problem' || msg.tab === 'solution') { switchTab(msg.tab); }
+										return;
+									}
+									if (msg.type !== 'videoReady') return;
+									// 按 requestId 关联发起点击的按钮；无 id（旧协议）退回首个加载中按钮
+									var btn = null;
+									if (msg.requestId != null) {
+										btn = lcVideoReqBtns[msg.requestId] || null;
+										delete lcVideoReqBtns[msg.requestId];
+									} else {
+										btn = document.querySelector('.video-link[data-loading="1"]');
+									}
+									if (!btn || !btn.isConnected) {
+										if (msg.requestId != null) {
+											var tip = document.createElement('div');
+											tip.className = 'loading';
+											tip.textContent = '视频已就绪，但页面已刷新，请重新点击播放（已缓存，秒开）';
+											var host = document.querySelector('.solution-content') || document.body;
+											host.prepend(tip);
+											setTimeout(function() { tip.remove(); }, 6000);
+										}
+										return;
+									}
 									runVideoCleanups();
 									var container = document.createElement('div');
 									container.className = 'article-video';
@@ -1808,7 +1889,9 @@ v.addEventListener('error', fallbackOnFail);
 									var langTab = t.closest('.lang-tab');
 									if (langTab) { selectLangTab(langTab); return; }
 									var article = t.closest('.article-item');
-									if (article && article.getAttribute('data-slug')) { openArticle(article.getAttribute('data-slug')); return; }
+										if (article && article.getAttribute('data-slug')) { openArticle(article.getAttribute('data-slug')); return; }
+										var backList = t.closest('[data-back-list]');
+										if (backList) { vscode.postMessage({ type: 'showCachedSolution' }); return; }
 									var sw = t.closest('[data-switch-tab]');
 									if (sw) { switchTab(sw.getAttribute('data-switch-tab')); return; }
 									if (t.closest('[data-refresh-tab]')) { refreshCurrent(); }

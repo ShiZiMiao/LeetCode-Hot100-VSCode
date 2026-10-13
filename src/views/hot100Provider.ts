@@ -23,6 +23,7 @@ type TreeNode = CategoryItem | QuestionItem | ProgressItem | WrongCategoryItem |
 const WRONG_STORE_KEY = 'hot100WrongQueue';
 const GROUP_BY_STORE_KEY = 'hot100GroupBy';
 const SOLVED_DATES_KEY = 'hot100SolvedDates';
+const SOLVED_IDS_BY_DATE_KEY = 'hot100SolvedIdsByDate';
 const FAVORITES_KEY = 'hot100Favorites';
 
 /** 列表接口下发的题目元数据（展示用；仅保留实际消费的字段） */
@@ -72,6 +73,9 @@ export class Hot100Provider implements vscode.TreeDataProvider<TreeNode> {
     private wrongList: WrongEntry[] = [];
     // 提交通过的日期集合（YYYY-MM-DD，本地时区；仅记扩展内通过，用于连续打卡/每日目标）
     private solvedDates: Set<string> = new Set();
+    // 每日通过的题号集合（日期 → 去重题号）：每日目标按题数计（同题多次通过只计 1 题），
+    // 旧数据只有日期集合时回退按打卡计 1
+    private solvedIdsByDate: Map<string, Set<string>> = new Map();
     // 本地收藏（与官网收藏独立，离线可用；toggleFavorite 维护）
     private favoriteIds: Set<string> = new Set();
     // 列表接口元数据（会员题/通过率/频次/题解数，API 加载后填充）
@@ -91,6 +95,16 @@ const cached = store?.get<WrongEntry[]>(WRONG_STORE_KEY, []);
         const cachedDates = store?.get<string[]>(SOLVED_DATES_KEY, []);
         if (Array.isArray(cachedDates)) {
             this.solvedDates = new Set(cachedDates.filter(d => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)));
+        }
+        const cachedIdsByDate = store?.get<Record<string, string[]>>(SOLVED_IDS_BY_DATE_KEY, {});
+        if (cachedIdsByDate && typeof cachedIdsByDate === 'object') {
+            // 只保留近 60 天（历史每日计数无需留存，防存储无界增长）
+            const keepAfter = localDateStr(new Date(Date.now() - 60 * 24 * 3600 * 1000));
+            for (const [d, ids] of Object.entries(cachedIdsByDate)) {
+                if (/^\d{4}-\d{2}-\d{2}$/.test(d) && d >= keepAfter && Array.isArray(ids)) {
+                    this.solvedIdsByDate.set(d, new Set(ids.filter(id => typeof id === 'string')));
+                }
+            }
         }
         const cachedFavs = store?.get<string[]>(FAVORITES_KEY, []);
         if (Array.isArray(cachedFavs)) {
@@ -180,8 +194,23 @@ const cached = store?.get<WrongEntry[]>(WRONG_STORE_KEY, []);
 		}
 		// 提交通过当日打卡：连续打卡/每日目标进度依赖此集合（仅 Hot 100）
 		if (opts.solved && id) {
-			this.solvedDates.add(localDateStr());
+			const today = localDateStr();
+			this.solvedDates.add(today);
 			this.store?.update(SOLVED_DATES_KEY, [...this.solvedDates]);
+			// 每日目标按"通过的题数"计：去重题号累积（同题多次通过只计 1 题）
+			let ids = this.solvedIdsByDate.get(today);
+			if (!ids) {
+				ids = new Set();
+				this.solvedIdsByDate.set(today, ids);
+			}
+			if (!ids.has(id)) {
+				ids.add(id);
+				const out: Record<string, string[]> = {};
+				for (const [d, s] of this.solvedIdsByDate) {
+					out[d] = [...s];
+				}
+				this.store?.update(SOLVED_IDS_BY_DATE_KEY, out);
+			}
 		}
 		if (id || this.wrongList.length > 0 || opts.solved) {
 			this._onDidChangeTreeData.fire();
@@ -348,7 +377,9 @@ const cached = store?.get<WrongEntry[]>(WRONG_STORE_KEY, []);
         const stats: StudyStats = computeStudyStats(
             HOT_100_LIST,
             q => statusOf(this.questionStatusMap.get(q.frontendQuestionId)),
-            [...this.solvedDates]
+            [...this.solvedDates],
+            localDateStr(),
+            Object.fromEntries([...this.solvedIdsByDate].map(([d, s]) => [d, [...s]]))
         );
         const rows: StatsRowItem[] = [
             new StatsRowItem(`总进度：${stats.total.solved} / ${stats.total.total}（${progressPercent(stats.total)}%）`, new vscode.ThemeIcon('graph'), undefined, 'statsRow')

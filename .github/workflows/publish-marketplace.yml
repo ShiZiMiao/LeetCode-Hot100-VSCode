@@ -23,13 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 版本由 package.json 的 packageManager 字段提供；
+      # 此处再写 with.version 会触发 "Multiple versions of pnpm specified" 直接失败
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11
 
       - uses: actions/setup-node@v4
         with:
-          # @vscode/vsce@next（OIDC 支持所在版本线）要求 Node >= 22
+          # @vscode/vsce@4.x（OIDC 支持所在版本线）要求 Node >= 22
           node-version: 22
           cache: pnpm
 
@@ -38,13 +38,15 @@ jobs:
 
       # 与本地发布完全一致：--no-dependencies（pnpm 布局兼容）、--skip-license（LICENSE 校验冲突）
       # --readme-path：商店页用 MARKETPLACE.md（无 fork 归属声明；GitHub 首页仍用 README.md）
+      # vsce 钉版 4.0.0（3.9.3 在 npm 上不存在；钉死保证可复现，勿用浮动 @next）
       - name: Package VSIX
-        run: npx --yes @vscode/vsce@3.9.3 package --out Hot100-for-VSCode.vsix --no-dependencies --skip-license --readme-path MARKETPLACE.md
+        run: npx --yes @vscode/vsce@4.0.0 package --out Hot100-for-VSCode.vsix --no-dependencies --skip-license --readme-path MARKETPLACE.md
 
       # --packagePath 直接上传已打包产物，不会执行 npm version / git tag 等操作；
       # --oidc 用 GitHub Actions OIDC 交换短期 Marketplace 凭证。
-      # 注意：--oidc 仅在 @vscode/vsce@next（3.9.3 系列）存在，latest(3.9.2) 无此选项；
+      # 注意：--oidc 自 @vscode/vsce@4.0.0 起进入正式版（3.9.x 仅预发布有）；
       #       该选项被上游 hideHelp() 隐藏，--help 看不到，但实际可用。
-      #       前置：需在 Marketplace 发布者管理端配置本仓库+工作流的 Trusted Publishing 策略。
+      #       前置：需在 Marketplace 发布者管理端配置本仓库+工作流的 Trusted Publishing 策略；
+      #       服务端 token 交换端点（2026-09 实测 404）上线前本步必然失败属预期，走手动网页上传。
       - name: Publish to Marketplace
-        run: npx --yes @vscode/vsce@next publish --packagePath Hot100-for-VSCode.vsix --oidc
+        run: npx --yes @vscode/vsce@4.0.0 publish --packagePath Hot100-for-VSCode.vsix --oidc

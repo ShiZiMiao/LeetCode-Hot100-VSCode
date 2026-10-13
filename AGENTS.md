@@ -8,7 +8,7 @@
 
 - **原仓库**：`https://github.com/Imzhou-tju/Hot100-for-VSCode`（MIT，原作者）
 - **当前仓库（fork 修复版）**：`https://github.com/ShiZiMiao/LeetCode-Hot100-VSCode`
-- **当前版本**：`0.1.15`
+- **当前版本**：`0.1.16`
 - **技术栈**：TypeScript、Node.js（>=16）、VS Code Extension API（>=1.107）、pnpm
 - **运行时依赖**：`playwright-core`（登录一键浏览器功能，`require` 走 `vendor/playwright-core/` 副本）。**打包不经过 node_modules**（vsce 带 `--no-dependencies`），vendor 副本须先同步（见打包步骤）；历史死依赖 `marked` 已移除。webview 渲染全部扩展端自研 + 本地 vendor 资源。
 

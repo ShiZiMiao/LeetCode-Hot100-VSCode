@@ -52,5 +52,6 @@ export async function retryTransient<T>(fn: () => Promise<T>, maxAttempts: numbe
             await new Promise(r => setTimeout(r, delayMs * (attempt + 1)));
         }
     }
-    throw lastErr;
+    // maxAttempts < 1 时循环不执行、lastErr 未赋值（抛 undefined 不可读）
+    throw lastErr ?? new Error('retryTransient: maxAttempts 必须 >= 1');
 }

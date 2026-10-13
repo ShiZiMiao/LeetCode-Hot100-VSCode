@@ -22,3 +22,8 @@ export function errMsg(error: unknown): string {
 	if (typeof error === 'string') { return error; }
 	try { return JSON.stringify(error); } catch { return String(error); }
 }
+
+/** 面板关闭后的晚到回调会抛 "Webview is disposed"：属预期噪音，不应弹给用户 */
+export function isDisposedError(error: unknown): boolean {
+	return /webview is disposed/i.test(errMsg(error));
+}

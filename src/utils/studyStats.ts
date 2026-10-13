@@ -52,12 +52,15 @@ export interface StudyStats {
 /**
  * 汇总刷题统计：总进度 + 难度/分类分布 + 连续打卡 + 今日进度。
  * 统计始终基于全列表（不受侧栏状态筛选影响），与总进度行行为一致。
+ * 今日通过数按 solvedIdsByDate（日期 → 去重题号）计——solvedDates 是日期集合，
+ * 按它计数恒 ≤1、每日目标永远达不成；旧数据无题号记录时回退为"当日有打卡计 1"。
  */
 export function computeStudyStats(
     questions: Hot100Question[],
     statusOf: (q: Hot100Question) => QuestionStatus | undefined,
     solvedDates: readonly string[],
-    today: string = localDateStr()
+    today: string = localDateStr(),
+    solvedIdsByDate: Readonly<Record<string, readonly string[]>> = {}
 ): StudyStats {
     const total = computeProgressStats(questions.map(q => statusOf(q)));
     const difficultyRows = DIFFICULTY_ORDER.map(level => {
@@ -70,11 +73,12 @@ export function computeStudyStats(
         const stats = computeProgressStats(questions.filter(q => q.category === category).map(q => statusOf(q)));
         return { category, solved: stats.solved, total: stats.total };
     });
+    const todayIds = solvedIdsByDate[today] ?? [];
     return {
         total,
         difficultyRows,
         categoryRows,
         streakDays: computeStreak(solvedDates, today),
-        todaySolved: solvedDates.filter(d => d === today).length
+        todaySolved: Math.max(todayIds.length, solvedDates.includes(today) ? 1 : 0)
     };
 }
